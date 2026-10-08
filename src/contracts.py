@@ -14,11 +14,14 @@ class RunTelemetry(BaseModel):
     llm_calls: int | None = None
     tool_calls: int | None = None
     tool_names: list[str] = Field(default_factory=list)
+    mode: str | None = Field(default=None, description="llm, offline, or llm_fallback")
 
 
 class ProcurementDecision(BaseModel):
     request_id: str
     recommendation: str = Field(description="Short recommendation label or sentence")
+    action: str | None = Field(default=None, description="Machine-readable next-action category")
+    rationale: str | None = Field(default=None, description="Short explanation of the recommendation")
     evidence: list[EvidenceItem] = Field(default_factory=list)
     required_approvals: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)

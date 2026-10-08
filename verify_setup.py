@@ -17,6 +17,7 @@ REQUIRED_MODULES = [
     "dotenv",
     "streamlit",
     "httpx",
+    "openai",
 ]
 
 
@@ -134,6 +135,28 @@ def check_mock_api() -> None:
     ok("Mock vendor-risk API checks passed")
 
 
+def check_solution() -> None:
+    import os
+
+    from src.mock_server import mock_api_running
+    from src.solution import handle_request
+
+    previous = os.environ.get("COPILOT_OFFLINE")
+    os.environ["COPILOT_OFFLINE"] = "1"
+    try:
+        with mock_api_running():
+            for architecture in ("single", "staged"):
+                decision = handle_request("REQ-1001", architecture)
+                if not decision.human_review_required or not decision.evidence:
+                    fail(f"handle_request returned an unsafe decision for architecture={architecture}")
+    finally:
+        if previous is None:
+            os.environ.pop("COPILOT_OFFLINE")
+        else:
+            os.environ["COPILOT_OFFLINE"] = previous
+    ok("handle_request works for both architectures (offline smoke test)")
+
+
 def main() -> None:
     print("FDE Assessment 3 - starter pack pre-flight\n")
     check_python()
@@ -141,8 +164,9 @@ def main() -> None:
     check_data()
     check_contract_and_evals()
     check_mock_api()
+    check_solution()
     print("\nPRE-FLIGHT PASSED")
-    print("Next: copy .env.example to .env, add your model credentials, then run: python run_local.py")
+    print("Next: copy .env.example to .env, optionally add GEMINI_API_KEY, then run: python run_local.py")
 
 
 if __name__ == "__main__":

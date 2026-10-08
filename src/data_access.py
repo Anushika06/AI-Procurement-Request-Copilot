@@ -9,23 +9,23 @@ DATA_DIR = ROOT / "data"
 
 
 def load_employees() -> pd.DataFrame:
-    return pd.read_csv(DATA_DIR / "employees.csv")
+    return pd.read_csv(DATA_DIR / "employees.csv", keep_default_na=False)
 
 
 def load_budgets() -> pd.DataFrame:
-    return pd.read_csv(DATA_DIR / "department_budgets.csv")
+    return pd.read_csv(DATA_DIR / "department_budgets.csv", keep_default_na=False)
 
 
 def load_software_catalog() -> pd.DataFrame:
-    return pd.read_csv(DATA_DIR / "software_catalog.csv")
+    return pd.read_csv(DATA_DIR / "software_catalog.csv", keep_default_na=False)
 
 
 def load_vendors() -> pd.DataFrame:
-    return pd.read_csv(DATA_DIR / "vendors.csv")
+    return pd.read_csv(DATA_DIR / "vendors.csv", keep_default_na=False)
 
 
 def load_purchase_history() -> pd.DataFrame:
-    return pd.read_csv(DATA_DIR / "purchase_history.csv")
+    return pd.read_csv(DATA_DIR / "purchase_history.csv", keep_default_na=False)
 
 
 def load_requests() -> list[dict]:

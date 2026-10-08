@@ -17,6 +17,13 @@ def start(cmd: list[str]) -> subprocess.Popen:
     return subprocess.Popen(cmd, cwd=ROOT)
 
 
+def api_is_up(url: str) -> bool:
+    try:
+        return requests.get(url, timeout=0.5).ok
+    except requests.RequestException:
+        return False
+
+
 def wait_for_api(url: str, proc: subprocess.Popen, timeout_seconds: float = 10.0) -> None:
     """Wait until the mock API is reachable or fail with a useful message."""
     deadline = time.monotonic() + timeout_seconds
@@ -45,22 +52,25 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_termination)
     procs: list[subprocess.Popen] = []
     try:
-        print("Starting vendor-risk API on http://127.0.0.1:8001 ...")
-        api_proc = start(
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "mock_api.app:app",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "8001",
-            ]
-        )
-        procs.append(api_proc)
-        wait_for_api("http://127.0.0.1:8001/health", api_proc)
-        print("Vendor-risk API is ready.")
+        if api_is_up("http://127.0.0.1:8001/health"):
+            print("Vendor-risk API already running on http://127.0.0.1:8001 - reusing it.")
+        else:
+            print("Starting vendor-risk API on http://127.0.0.1:8001 ...")
+            api_proc = start(
+                [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "mock_api.app:app",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8001",
+                ]
+            )
+            procs.append(api_proc)
+            wait_for_api("http://127.0.0.1:8001/health", api_proc)
+            print("Vendor-risk API is ready.")
 
         try:
             __import__("streamlit")
@@ -68,7 +78,7 @@ def main() -> None:
             print("Streamlit is not installed. Run: pip install -r requirements.txt")
             print("The mock API is still running. Press Ctrl+C to stop.")
         else:
-            print("Starting starter UI on http://127.0.0.1:8501 ...")
+            print("Starting copilot UI on http://127.0.0.1:8501 ...")
             procs.append(
                 start(
                     [
@@ -79,9 +89,14 @@ def main() -> None:
                         "app.py",
                         "--server.port",
                         "8501",
+                        "--server.headless",
+                        "true",
+                        "--browser.gatherUsageStats",
+                        "false",
                     ]
                 )
             )
+            print("Open http://127.0.0.1:8501 in your browser. Press Ctrl+C to stop.")
 
         while True:
             time.sleep(1)

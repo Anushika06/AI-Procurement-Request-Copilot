@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.contracts import ProcurementDecision
+from src.mock_server import mock_api_running
 from src.solution import handle_request
 
 
@@ -62,7 +63,7 @@ def evaluate(decision: ProcurementDecision, expectations: dict) -> list[str]:
     return failures
 
 
-def main() -> None:
+def run() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--architecture', choices=['single','staged'], default='single')
     args = parser.parse_args()
@@ -109,6 +110,12 @@ def main() -> None:
         passed = sum(1 for r in rows if r['passed_minimum_checks'])
         print(f"\nMinimum checks passed: {passed}/{len(rows)}")
         print(f"Results written to: {out.relative_to(ROOT)}")
+
+
+def main() -> None:
+    # The vendor-risk tool needs the mock API; reuse a running one or start it for this run.
+    with mock_api_running():
+        run()
 
 
 if __name__ == '__main__':
