@@ -41,6 +41,16 @@ ID_COLUMNS = {
 KNOWN_IDS = {name: set(map(str, loader()[col])) for name, (loader, col) in ID_COLUMNS.items()}
 
 
+def _is_quota_error(exc: Exception) -> bool:
+    """Return True when exc is a quota-exhaustion (429 RESOURCE_EXHAUSTED) error."""
+    msg = str(exc).lower()
+    return "429" in msg or "resource_exhausted" in msg or "quota" in msg
+
+
+class QuotaExhaustedError(RuntimeError):
+    """Raised when a 429 / RESOURCE_EXHAUSTED response is received during an LLM evaluation run."""
+
+
 def load_cases() -> list[dict]:
     cases = json.loads((ROOT / "evals" / "expected_outcomes.json").read_text(encoding="utf-8"))
     public = {c["case_id"]: c for c in json.loads((ROOT / "evals" / "public_cases.json").read_text(encoding="utf-8"))}
@@ -98,11 +108,32 @@ def escalation_correct(decision, case: dict) -> bool:
 
 
 def run_case(case: dict, architecture: str, repeats: int) -> dict:
+    """Run a single case *repeats* times and return aggregated metrics.
+
+    Raises QuotaExhaustedError if any repeat hits a 429 while in LLM mode,
+    so the caller can abort cleanly rather than silently recording a misleading result.
+    """
     latencies, decision = [], None
     for _ in range(repeats):
         start = time.perf_counter()
-        decision = analyze_request(dict(case["request"]), architecture)
-        latencies.append((time.perf_counter() - start) * 1000)
+        try:
+            decision = analyze_request(dict(case["request"]), architecture)
+        except Exception as exc:
+            if _is_quota_error(exc):
+                raise QuotaExhaustedError(str(exc)) from exc
+            raise
+        elapsed = (time.perf_counter() - start) * 1000
+        latencies.append(elapsed)
+
+        # If the agent caught the quota error internally and fell back to heuristics,
+        # surface it explicitly so the run is not silently misreported as LLM.
+        if decision.telemetry and decision.telemetry.mode == "llm_fallback":
+            rationale = (decision.rationale or "").lower()
+            if "429" in rationale or "resource_exhausted" in rationale or "quota" in rationale:
+                raise QuotaExhaustedError(
+                    f"Case {case['case_id']}: LLM fallback triggered by quota error"
+                )
+
     grounding = grounding_problems(decision)
     policy = policy_problems(decision, case)
     public_failures = public_minimum_checks(decision, case["public"]["expectations"]) if case["public"] else None
@@ -131,9 +162,16 @@ def run_case(case: dict, architecture: str, repeats: int) -> dict:
 
 
 def api_down_check(cases: list[dict], architecture: str) -> tuple[int, int]:
-    """Point the vendor client at a dead port: every case must degrade to manual review, never a clean approval."""
-    previous = os.environ.get("VENDOR_RISK_BASE_URL")
+    """Point the vendor client at a dead port: every case must degrade to manual review, never a clean approval.
+
+    Runs in offline / deterministic mode (COPILOT_OFFLINE=1) so this check
+    does not consume any Gemini quota.  The tested behaviour is deterministic
+    failure-handling, not LLM reasoning, so the LLM is not needed here.
+    """
+    previous_url = os.environ.get("VENDOR_RISK_BASE_URL")
+    previous_offline = os.environ.get("COPILOT_OFFLINE")
     os.environ["VENDOR_RISK_BASE_URL"] = "http://127.0.0.1:9"
+    os.environ["COPILOT_OFFLINE"] = "1"  # force deterministic mode – no quota consumed
     ok = 0
     try:
         for case in cases:
@@ -146,15 +184,50 @@ def api_down_check(cases: list[dict], architecture: str) -> tuple[int, int]:
             ):
                 ok += 1
     finally:
-        if previous is None:
+        if previous_url is None:
             os.environ.pop("VENDOR_RISK_BASE_URL", None)
         else:
-            os.environ["VENDOR_RISK_BASE_URL"] = previous
+            os.environ["VENDOR_RISK_BASE_URL"] = previous_url
+        if previous_offline is None:
+            os.environ.pop("COPILOT_OFFLINE", None)
+        else:
+            os.environ["COPILOT_OFFLINE"] = previous_offline
     return ok, len(cases)
 
 
 def pct(rows: list[dict], key: str) -> str:
     return f"{sum(1 for r in rows if r[key])}/{len(rows)}"
+
+
+def _derive_mode_label(rows: list[dict], llm_attempted: bool) -> str:
+    """Determine the mode label based on what *actually* ran, not just whether the key exists.
+
+    Rules
+    -----
+    - No API key / COPILOT_OFFLINE=1  -> ``offline``
+    - All cases mode=="llm"           -> ``llm``
+    - Any case mode=="llm_fallback"   -> ``llm_fallback (mixed)``  (NOT a valid LLM eval)
+    - All cases mode=="llm_fallback"  -> ``llm_fallback``          (NOT a valid LLM eval)
+    """
+    if not llm_attempted:
+        return "offline (no API key / COPILOT_OFFLINE=1, deterministic fallback)"
+    modes = {r["mode"] for r in rows}
+    if modes == {"llm"}:
+        return f"llm ({model_name()})"
+    fallback_count = sum(1 for r in rows if r["mode"] == "llm_fallback")
+    total = len(rows)
+    if "llm" in modes:
+        # Mixed run
+        return (
+            f"llm_fallback (mixed) – {model_name()} attempted but "
+            f"{fallback_count}/{total} case(s) used deterministic fallback; "
+            "results are NOT a valid pure-LLM evaluation"
+        )
+    # Every case fell back
+    return (
+        f"llm_fallback – {model_name()} attempted but every case used "
+        "deterministic fallback; results are NOT a valid LLM evaluation"
+    )
 
 
 def summarise(rows: list[dict], api_down: dict, mode_label: str) -> str:
@@ -182,37 +255,58 @@ def summarise(rows: list[dict], api_down: dict, mode_label: str) -> str:
     row("p95 latency (ms)", lambda rs: f"{sorted(r['latency_ms'] for r in rs)[int(0.95 * (len(rs) - 1))]:.1f}")
     row("Avg LLM calls", lambda rs: f"{statistics.mean(r['llm_calls'] for r in rs):.2f}")
     row("Avg tool calls", lambda rs: f"{statistics.mean(r['tool_calls'] for r in rs):.2f}")
-    lines += ["", "## Per-case results", "", "| Case | Arch | Action | Correct | Grounded | Policy | Escalation | ms | LLM | Tools | Notes |",
-              "|---|---|---|---|---|---|---|---:|---:|---:|---|"]
+    lines += ["", "## Per-case results", "",
+              "| Case | Arch | Action | Correct | Grounded | Policy | Escalation | ms | LLM | Tools | Mode | Notes |",
+              "|---|---|---|---|---|---|---|---:|---:|---:|---|---|"]
     yes = {True: "yes", False: "**no**"}
     for r in rows:
         lines.append(
             f"| {r['case_id']} | {r['architecture']} | {r['action']} | {yes[r['correct_next_action']]} | "
             f"{yes[r['grounded_evidence']]} | {yes[r['policy_followed']]} | {yes[r['human_escalation_correct']]} | "
-            f"{r['latency_ms']} | {r['llm_calls']} | {r['tool_calls']} | {r['notes'] or ''} |"
+            f"{r['latency_ms']} | {r['llm_calls']} | {r['tool_calls']} | {r['mode']} | {r['notes'] or ''} |"
         )
     return "\n".join(lines) + "\n"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repeats", type=int, default=3, help="runs per case; median latency is reported")
+    # Default is 1 to avoid burning quota on repeated LLM calls.
+    # Pass --repeats 3 only when quota is available and stable latency medians are needed.
+    parser.add_argument("--repeats", type=int, default=1,
+                        help="runs per case for latency median (default: 1 to conserve quota)")
     args = parser.parse_args()
 
-    mode_label = f"LLM ({model_name()})" if llm_enabled() else "offline (no API key, deterministic fallback)"
-    print(f"Comparing architectures - {mode_label}")
+    llm_attempted = llm_enabled()
+    if llm_attempted:
+        print(f"Comparing architectures – LLM mode ({model_name()}), repeats={args.repeats}")
+        print("  Note: if Gemini returns 429 the run will abort with a clear error (no silent fallback).")
+    else:
+        print("Comparing architectures – offline mode (deterministic fallback)")
+
     cases = load_cases()
     rows, api_down = [], {}
     with mock_api_running():
         for arch in ARCHITECTURES:
             for case in cases:
-                result = run_case(case, arch, args.repeats)
+                try:
+                    result = run_case(case, arch, args.repeats)
+                except QuotaExhaustedError as exc:
+                    print(
+                        f"\n[QUOTA EXHAUSTED] {arch}/{case['case_id']}: {exc}\n"
+                        "Aborting LLM evaluation. No results written.\n"
+                        "Options:\n"
+                        "  1. Wait for daily quota to reset, then re-run: python evals/compare.py\n"
+                        "  2. Run offline baseline:  COPILOT_OFFLINE=1 python evals/compare.py\n"
+                    )
+                    sys.exit(1)
                 result["public_ok"] = result["public_minimum_checks"] == "PASS"
                 rows.append(result)
                 status = "ok " if result["correct_next_action"] and result["policy_followed"] and result["grounded_evidence"] else "BAD"
                 print(f"  {status} {arch:<6} {case['case_id']:<7} {result['action']:<24} {result['latency_ms']:>8} ms  "
-                      f"llm={result['llm_calls']} tools={result['tool_calls']}  {result['notes']}")
+                      f"llm={result['llm_calls']} tools={result['tool_calls']}  mode={result['mode']}  {result['notes']}")
             api_down[arch] = api_down_check(cases, arch)
+
+    mode_label = _derive_mode_label(rows, llm_attempted)
 
     RESULTS_DIR.mkdir(exist_ok=True)
     columns = ["case_id", "architecture", "correct_next_action", "grounded_evidence", "policy_followed",

@@ -39,7 +39,7 @@ class LLMClient:
             api_key=_api_key(),
             base_url=os.getenv("LLM_BASE_URL", DEFAULT_BASE_URL),
             timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "45")),
-            max_retries=2,
+            max_retries=0,  # never retry quota (429) errors; let compare.py handle them explicitly
         )
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None):
