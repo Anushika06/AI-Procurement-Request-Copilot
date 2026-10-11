@@ -10,8 +10,8 @@ Mode: **offline (no API key / COPILOT_OFFLINE=1, deterministic fallback)**. Same
 | Policy / deterministic rules followed | 15/15 | 15/15 |
 | Human escalation correct | 15/15 | 15/15 |
 | Vendor API down: safe degradation | 15/15 | 15/15 |
-| Avg latency (ms) | 20.8 | 23.8 |
-| p95 latency (ms) | 31.0 | 31.5 |
+| Avg latency (ms) | 17.7 | 17.2 |
+| p95 latency (ms) | 30.8 | 18.4 |
 | Avg LLM calls | 0.00 | 0.00 |
 | Avg tool calls | 5.00 | 5.00 |
 
@@ -19,33 +19,33 @@ Mode: **offline (no API key / COPILOT_OFFLINE=1, deterministic fallback)**. Same
 
 | Case | Arch | Action | Correct | Grounded | Policy | Escalation | ms | LLM | Tools | Mode | Notes |
 |---|---|---|---|---|---|---|---:|---:|---:|---|---|
-| PUB-01 | single | standard_approval | yes | yes | yes | yes | 12.4 | 0 | 5 | offline |  |
-| PUB-02 | single | route_for_review | yes | yes | yes | yes | 29.9 | 0 | 5 | offline |  |
-| PUB-03 | single | route_for_review | yes | yes | yes | yes | 30.0 | 0 | 5 | offline |  |
-| PUB-04 | single | route_for_review | yes | yes | yes | yes | 31.0 | 0 | 5 | offline |  |
-| PUB-05 | single | request_clarification | yes | yes | yes | yes | 29.6 | 0 | 5 | offline |  |
-| PUB-06 | single | verify_vendor_evidence | yes | yes | yes | yes | 30.9 | 0 | 5 | offline |  |
-| EXT-01 | single | route_for_review | yes | yes | yes | yes | 30.8 | 0 | 5 | offline |  |
-| EXT-02 | single | verify_vendor_evidence | yes | yes | yes | yes | 31.1 | 0 | 5 | offline |  |
-| EXT-03 | single | use_existing_tool | yes | yes | yes | yes | 8.3 | 0 | 5 | offline |  |
-| EXT-04 | single | standard_approval | yes | yes | yes | yes | 21.7 | 0 | 5 | offline |  |
-| SYN-01 | single | use_existing_tool | yes | yes | yes | yes | 10.1 | 0 | 5 | offline |  |
-| SYN-02 | single | route_for_review | yes | yes | yes | yes | 11.5 | 0 | 5 | offline |  |
-| SYN-03 | single | standard_approval | yes | yes | yes | yes | 12.7 | 0 | 5 | offline |  |
-| SYN-04 | single | request_clarification | yes | yes | yes | yes | 11.1 | 0 | 5 | offline |  |
-| SYN-05 | single | route_for_review | yes | yes | yes | yes | 10.2 | 0 | 5 | offline |  |
-| PUB-01 | staged | standard_approval | yes | yes | yes | yes | 11.1 | 0 | 5 | offline |  |
-| PUB-02 | staged | route_for_review | yes | yes | yes | yes | 21.5 | 0 | 5 | offline |  |
-| PUB-03 | staged | route_for_review | yes | yes | yes | yes | 31.6 | 0 | 5 | offline |  |
-| PUB-04 | staged | route_for_review | yes | yes | yes | yes | 30.4 | 0 | 5 | offline |  |
-| PUB-05 | staged | request_clarification | yes | yes | yes | yes | 31.5 | 0 | 5 | offline |  |
-| PUB-06 | staged | verify_vendor_evidence | yes | yes | yes | yes | 14.3 | 0 | 5 | offline |  |
-| EXT-01 | staged | route_for_review | yes | yes | yes | yes | 16.3 | 0 | 5 | offline |  |
-| EXT-02 | staged | verify_vendor_evidence | yes | yes | yes | yes | 30.1 | 0 | 5 | offline |  |
-| EXT-03 | staged | use_existing_tool | yes | yes | yes | yes | 16.2 | 0 | 5 | offline |  |
-| EXT-04 | staged | standard_approval | yes | yes | yes | yes | 15.5 | 0 | 5 | offline |  |
-| SYN-01 | staged | use_existing_tool | yes | yes | yes | yes | 30.9 | 0 | 5 | offline |  |
-| SYN-02 | staged | route_for_review | yes | yes | yes | yes | 30.6 | 0 | 5 | offline |  |
-| SYN-03 | staged | standard_approval | yes | yes | yes | yes | 31.2 | 0 | 5 | offline |  |
-| SYN-04 | staged | request_clarification | yes | yes | yes | yes | 30.6 | 0 | 5 | offline |  |
-| SYN-05 | staged | route_for_review | yes | yes | yes | yes | 15.1 | 0 | 5 | offline |  |
+| PUB-01 | single | standard_approval | yes | yes | yes | yes | 8.9 | 0 | 5 | offline |  |
+| PUB-02 | single | route_for_review | yes | yes | yes | yes | 7.7 | 0 | 5 | offline |  |
+| PUB-03 | single | route_for_review | yes | yes | yes | yes | 8.1 | 0 | 5 | offline |  |
+| PUB-04 | single | route_for_review | yes | yes | yes | yes | 7.3 | 0 | 5 | offline |  |
+| PUB-05 | single | request_clarification | yes | yes | yes | yes | 22.9 | 0 | 5 | offline |  |
+| PUB-06 | single | verify_vendor_evidence | yes | yes | yes | yes | 29.6 | 0 | 5 | offline |  |
+| EXT-01 | single | route_for_review | yes | yes | yes | yes | 9.0 | 0 | 5 | offline |  |
+| EXT-02 | single | verify_vendor_evidence | yes | yes | yes | yes | 21.7 | 0 | 5 | offline |  |
+| EXT-03 | single | use_existing_tool | yes | yes | yes | yes | 17.4 | 0 | 5 | offline |  |
+| EXT-04 | single | standard_approval | yes | yes | yes | yes | 7.6 | 0 | 5 | offline |  |
+| SYN-01 | single | use_existing_tool | yes | yes | yes | yes | 31.0 | 0 | 5 | offline |  |
+| SYN-02 | single | route_for_review | yes | yes | yes | yes | 30.8 | 0 | 5 | offline |  |
+| SYN-03 | single | standard_approval | yes | yes | yes | yes | 30.2 | 0 | 5 | offline |  |
+| SYN-04 | single | request_clarification | yes | yes | yes | yes | 6.7 | 0 | 5 | offline |  |
+| SYN-05 | single | route_for_review | yes | yes | yes | yes | 27.2 | 0 | 5 | offline |  |
+| PUB-01 | staged | standard_approval | yes | yes | yes | yes | 10.9 | 0 | 5 | offline |  |
+| PUB-02 | staged | route_for_review | yes | yes | yes | yes | 16.8 | 0 | 5 | offline |  |
+| PUB-03 | staged | route_for_review | yes | yes | yes | yes | 17.3 | 0 | 5 | offline |  |
+| PUB-04 | staged | route_for_review | yes | yes | yes | yes | 18.1 | 0 | 5 | offline |  |
+| PUB-05 | staged | request_clarification | yes | yes | yes | yes | 17.4 | 0 | 5 | offline |  |
+| PUB-06 | staged | verify_vendor_evidence | yes | yes | yes | yes | 18.4 | 0 | 5 | offline |  |
+| EXT-01 | staged | route_for_review | yes | yes | yes | yes | 21.5 | 0 | 5 | offline |  |
+| EXT-02 | staged | verify_vendor_evidence | yes | yes | yes | yes | 18.3 | 0 | 5 | offline |  |
+| EXT-03 | staged | use_existing_tool | yes | yes | yes | yes | 17.1 | 0 | 5 | offline |  |
+| EXT-04 | staged | standard_approval | yes | yes | yes | yes | 16.5 | 0 | 5 | offline |  |
+| SYN-01 | staged | use_existing_tool | yes | yes | yes | yes | 17.3 | 0 | 5 | offline |  |
+| SYN-02 | staged | route_for_review | yes | yes | yes | yes | 18.4 | 0 | 5 | offline |  |
+| SYN-03 | staged | standard_approval | yes | yes | yes | yes | 16.4 | 0 | 5 | offline |  |
+| SYN-04 | staged | request_clarification | yes | yes | yes | yes | 16.5 | 0 | 5 | offline |  |
+| SYN-05 | staged | route_for_review | yes | yes | yes | yes | 17.4 | 0 | 5 | offline |  |

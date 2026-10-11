@@ -15,6 +15,8 @@ class RunTelemetry(BaseModel):
     tool_calls: int | None = None
     tool_names: list[str] = Field(default_factory=list)
     mode: str | None = Field(default=None, description="llm, offline, or llm_fallback")
+    llm_error: str | None = Field(default=None, description="Model error that caused a fallback, if any")
+    llm_providers: list[str] = Field(default_factory=list, description="provider:model used for each LLM call")
 
 
 class ProcurementDecision(BaseModel):

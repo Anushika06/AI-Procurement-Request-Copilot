@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
+from openai.types.chat import ChatCompletionMessage
 
 from src import single_agent, staged_agents
 from src.data_access import get_request, load_requests
@@ -11,12 +11,15 @@ from src.llm import LLMError
 from src.solution import analyze_request, handle_request
 
 
-def tool_call(name: str, idx: int) -> SimpleNamespace:
-    return SimpleNamespace(id=f"call_{idx}", function=SimpleNamespace(name=name, arguments="{}"))
+def tool_call(name: str, idx: int, signature: str | None = None) -> dict:
+    call = {"id": f"call_{idx}", "type": "function", "function": {"name": name, "arguments": "{}"}}
+    if signature:
+        call["extra_content"] = {"google": {"thought_signature": signature}}
+    return call
 
 
-def reply(content: str | None = None, calls: list | None = None) -> SimpleNamespace:
-    return SimpleNamespace(content=content, tool_calls=calls)
+def reply(content: str | None = None, calls: list | None = None) -> ChatCompletionMessage:
+    return ChatCompletionMessage.model_validate({"role": "assistant", "content": content, "tool_calls": calls})
 
 
 class ScriptedLLM:
@@ -27,6 +30,7 @@ class ScriptedLLM:
 
     def __init__(self):
         self.model = "scripted"
+        self.last_used = "scripted:test-model"
 
     def chat(self, messages, tools=None):
         ScriptedLLM.seen.append(messages)
@@ -139,3 +143,26 @@ def test_vendor_api_down_routes_to_manual_review(monkeypatch, architecture):
     assert "vendor_risk_unavailable" in decision.risk_flags
     assert decision.action == "verify_vendor_evidence"
     assert "Security" in decision.required_approvals
+
+
+def test_thought_signatures_are_sent_back(vendor_api, scripted):
+    scripted.script = [
+        reply(calls=[tool_call("lookup_budget", 1, "sig-1"), tool_call("search_catalog", 2)]),
+        reply(content=json.dumps({"need_summary": "x", "overlap_assessment": "expansion",
+                                  "overlap_reason": "More signing seats.", "rationale": "Routine add-on."})),
+    ]
+    decision = handle_request("REQ-1001", "single")
+    assert decision.telemetry.mode == "llm"
+
+    second_request = scripted.seen[-1]
+    assistant = next(m for m in second_request if m["role"] == "assistant")
+    assert assistant["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "sig-1"}}
+    assert "extra_content" not in assistant["tool_calls"][1]
+    assert [m["tool_call_id"] for m in second_request if m["role"] == "tool"] == ["call_1", "call_2"]
+
+
+def test_fallback_records_the_model_error(vendor_api, scripted):
+    scripted.script = [LLMError("BadRequestError: Error code: 400 - invalid argument", 400)]
+    decision = handle_request("REQ-1001", "single")
+    assert decision.telemetry.mode == "llm_fallback"
+    assert "400" in decision.telemetry.llm_error

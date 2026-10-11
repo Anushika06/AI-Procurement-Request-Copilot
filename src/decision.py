@@ -168,6 +168,7 @@ def build_decision(
     judgement: dict,
     telemetry: RunTelemetryCounter,
     mode: str,
+    llm_error: str | None = None,
 ) -> ProcurementDecision:
     if "run_policy_checks" not in toolbox.results:
         toolbox.call("run_policy_checks")
@@ -216,5 +217,7 @@ def build_decision(
             tool_calls=telemetry.tool_calls,
             tool_names=telemetry.tool_names,
             mode=mode,
+            llm_error=llm_error,
+            llm_providers=telemetry.llm_providers,
         ),
     )

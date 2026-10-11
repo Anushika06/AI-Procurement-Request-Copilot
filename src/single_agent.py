@@ -5,7 +5,7 @@ import json
 
 from src.contracts import ProcurementDecision
 from src.decision import build_decision, heuristic_judgement
-from src.llm import LLMClient, LLMError, llm_enabled, parse_json
+from src.llm import LLMClient, LLMError, assistant_turn, llm_enabled, parse_json
 from src.prompts import request_block, single_agent_system
 from src.telemetry import RunTelemetryCounter
 from src.tools import TOOL_SCHEMAS, ToolBox
@@ -21,6 +21,7 @@ def run_single_agent(request: dict) -> ProcurementDecision:
         toolbox.gather_all()
         return build_decision(request, toolbox, heuristic_judgement(request, toolbox), telemetry, "offline")
 
+    error = None
     try:
         judgement = _agent_loop(request, toolbox, telemetry)
         mode = "llm"
@@ -33,7 +34,7 @@ def run_single_agent(request: dict) -> ProcurementDecision:
     if judgement is None:
         judgement = heuristic_judgement(request, toolbox)
         judgement["rationale"] = f"Model unavailable ({error[:120]}); deterministic fallback used."
-    return build_decision(request, toolbox, judgement, telemetry, mode)
+    return build_decision(request, toolbox, judgement, telemetry, mode, error)
 
 
 def _agent_loop(request: dict, toolbox: ToolBox, telemetry: RunTelemetryCounter) -> dict:
@@ -44,17 +45,10 @@ def _agent_loop(request: dict, toolbox: ToolBox, telemetry: RunTelemetryCounter)
     ]
     for _ in range(MAX_TURNS):
         message = llm.chat(messages, tools=TOOL_SCHEMAS)
-        telemetry.record_llm_call()
+        telemetry.record_llm_call(llm.last_used)
         if not message.tool_calls:
             return parse_json(message.content)
-        messages.append({
-            "role": "assistant",
-            "content": message.content or "",
-            "tool_calls": [
-                {"id": c.id, "type": "function", "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"}}
-                for c in message.tool_calls
-            ],
-        })
+        messages.append(assistant_turn(message))
         for call in message.tool_calls:
             result = toolbox.call(call.function.name)
             content = toolbox.for_llm(call.function.name) if "error" not in result else json.dumps(result)

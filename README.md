@@ -34,19 +34,32 @@ This starts the vendor-risk mock API on `http://127.0.0.1:8001` and the UI on `h
 
 ### LLM mode vs offline mode
 
-- **LLM mode:** put a Gemini key in `.env` as `GEMINI_API_KEY=...`. You can get one free from Google AI Studio. The default model is `gemini-2.5-flash`. Calls go through Gemini's OpenAI-compatible endpoint with the `openai` SDK, so any other OpenAI-compatible provider also works if you set `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY`.
+- **LLM mode:** put a Gemini key in `.env` as `GEMINI_API_KEY=...`. You can get one free from Google AI Studio. The default model is `gemini-3.8-flash` (`gemini-2.5-flash` is no longer offered to new projects). Calls go through Gemini's OpenAI-compatible endpoint with the `openai` SDK, so any other OpenAI-compatible provider also works if you set `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY`.
+- **Groq fallback (optional):** add `GROQ_API_KEY` (default model `openai/gpt-oss-120b`). With `LLM_PROVIDER=auto`, a Gemini quota error (429) or outage (5xx/timeouts after retries) switches the call to Groq, and Gemini is skipped for a cooldown period instead of being hit on every call. Request errors (400/401/404) do not fall back, so configuration problems stay visible. `LLM_PROVIDER=gemini` or `groq` pins one provider. Every LLM call records which `provider:model` answered (`telemetry.llm_providers`), and the UI run trace shows it.
 - **Offline mode:** used when there is no key, or when `COPILOT_OFFLINE=1`. The tools and the policy engine run exactly the same way. Only the model's judgement (does an existing tool already cover the need, plus the rationale text) is replaced by a keyword heuristic. Offline mode makes the app, tests and evals runnable anywhere and reproducible.
 
 The UI sidebar shows which mode is active.
 
+Free-tier quotas are small on both providers. A full `compare.py` run makes about 60-75 model requests on Gemini (more on Groq, see below), so it usually needs billing or a run spread over time. Transient errors (500/502/503/504, timeouts) are retried twice with a short backoff; quota errors (429) are never retried.
+
 ### Tests and evaluation
 
 ```bash
-python -m pytest                                        # 35 tests: policy rules, tools, both agents, guardrails
+python -m pytest                                        # 58 tests: policy rules, tools, agents, LLM client, provider fallback, guardrails
 python evals/run_public_evals.py --architecture single  # starter harness, 6 public cases
 python evals/run_public_evals.py --architecture staged
 python evals/compare.py                                 # both architectures, 15 cases -> evals/results/
 ```
+
+Before spending quota on a full LLM run, smoke-test a few cases. Nothing is written in this mode:
+
+```bash
+python evals/compare.py --arch staged --cases PUB-01
+python evals/compare.py --arch single --cases PUB-01
+python evals/compare.py --cases SYN-03,EXT-03
+```
+
+In LLM mode the run is **pinned to one provider** (the primary one, or `--provider gemini|groq`), so both architectures are compared on the same model. It stops at the first case that falls back to the offline heuristics, or that was answered by a different provider, and prints why. Written results are therefore always a single-model LLM evaluation, and the summary names the `provider:model`. A 429 with a short Retry-After (per-minute limit) is waited out up to `--rate-limit-wait` seconds (default 65); longer limits abort the run. `--delay N` pauses between cases for per-minute rate limits. The offline baseline is kept in `evals/results/summary_offline.md`.
 
 The eval scripts start the mock API themselves if it isn't already running.
 
@@ -165,7 +178,7 @@ These results are from offline mode (recorded without an API key):
 
 Per-case details are in `evals/results/summary.md` and `evals/results/comparison.csv`. The starter harness output is in `evals/results_single.csv` and `evals/results_staged.csv`.
 
-With a key set, `python evals/compare.py` re-runs everything in LLM mode and rewrites the results with measured latency and LLM call counts.
+With a key set, `python evals/compare.py` re-runs everything in LLM mode and rewrites `summary.md` and `comparison.csv` with measured latency and LLM call counts. The offline baseline stays in `summary_offline.md` / `comparison_offline.csv`.
 
 ## Architecture comparison and ship decision
 
@@ -181,6 +194,9 @@ On this test set the two architectures are equivalent on every quality metric. T
 - Sensitivity rules use keywords on `data_access_level` and integration names.
 - The human review log only lasts for the session: no persistence or authentication.
 - The policy engine encodes this policy version (2026.09) in code. A policy change means a code change, with tests.
+- Provider fallback is a product availability feature. Gemini and Groq are different models, so their results are never mixed in one evaluation; results from a Groq-pinned run describe the Groq model, not Gemini.
+- Groq's gpt-oss models do not make parallel tool calls, so Architecture A uses about one LLM call per tool (up to 6 per request) on Groq. With Groq's published Developer-plan limits for gpt-oss (8K tokens/minute, 200K tokens/day) a full A+B run needs pacing and may not fit in one day. Check your account's limits.
+- The Groq integration and Gemini 3.8 tool calling are covered by mocked-HTTP tests only; neither has been run against the live APIs from this repo yet.
 
 ## Changes to the starter pack
 
@@ -193,3 +209,10 @@ On this test set the two architectures are equivalent on every quality metric. T
 - Added `openai` and `pytest` to `requirements.txt`.
 - Added an offline `handle_request` smoke test to `verify_setup.py`.
 - Evaluation CSVs are no longer git-ignored, so the results are part of the submission.
+
+## Gemini 3 compatibility
+
+- Architecture A sends the assistant's tool-call message back unchanged, so Gemini's thought signatures (`tool_calls[].extra_content`) survive into the next turn. Gemini 3 models need them for multi-turn tool calling.
+- The tools take no arguments, so their schemas omit `parameters` instead of sending an empty object schema.
+- When a run falls back, the model error is recorded in `telemetry.llm_error`.
+- Requests sent to Groq contain only standard OpenAI message fields; Gemini-specific fields such as `extra_content` are stripped if a conversation switches provider mid-run.

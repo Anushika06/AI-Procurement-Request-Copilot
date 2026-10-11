@@ -74,7 +74,8 @@ flowchart LR
 One agent receives the request (inside `<request>` tags) and the policy text, chooses which tools
 to call, and finishes with a JSON judgement: `need_summary`, `overlap_assessment`,
 `overlap_reason`, `rationale`. After the loop, code runs any tool the agent skipped and builds the
-decision. Max 8 turns.
+decision. Max 8 turns. The assistant's tool-call message is sent back exactly as returned, so Gemini
+thought signatures are kept between turns.
 
 ## Architecture B - staged analyst → reviewer
 
@@ -102,6 +103,13 @@ Checked in this order, first match wins:
 3. `verify_vendor_evidence` - vendor-risk data unavailable or conflicting with the registry
 4. `route_for_review` - Security / Privacy / Legal review required, or budget insufficient / unverified
 5. `standard_approval` - only the financial-threshold approvers are needed
+
+## LLM providers
+
+Both architectures call the model through `src/llm.py`. Gemini is primary and Groq an optional fallback
+(`LLM_PROVIDER=auto`): quota errors and outages switch to Groq and put Gemini on a cooldown; request errors do
+not fall back. Each LLM call records its `provider:model` in telemetry. Evaluation runs pin a single provider
+and stop if a second one appears, so A and B are always compared on the same model.
 
 ## Guardrails and stop conditions
 

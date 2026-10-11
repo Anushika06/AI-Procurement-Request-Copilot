@@ -166,7 +166,7 @@ def main() -> None:
     check_mock_api()
     check_solution()
     print("\nPRE-FLIGHT PASSED")
-    print("Next: copy .env.example to .env, optionally add GEMINI_API_KEY, then run: python run_local.py")
+    print("Next: copy .env.example to .env, optionally add GEMINI_API_KEY (and GROQ_API_KEY as fallback), then run: python run_local.py")
 
 
 if __name__ == "__main__":

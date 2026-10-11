@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from src.data_access import load_employees, load_requests, load_software_catalog
-from src.llm import llm_enabled, model_name
+from src.llm import llm_enabled, provider_chain
 from src.mock_server import is_up
 from src.policy import reference_date
 from src.solution import analyze_request
@@ -37,9 +37,9 @@ with st.sidebar:
     architecture = st.radio("Architecture", list(ARCHITECTURES), format_func=ARCHITECTURES.get)
     st.divider()
     if llm_enabled():
-        st.write(f"Model: `{model_name()}`")
+        st.write(f"Model: `{provider_chain()}`")
     else:
-        st.write("Model: **offline mode** (no `GEMINI_API_KEY`) - deterministic fallback reasoning")
+        st.write("Model: **offline mode** (no `GEMINI_API_KEY` or `GROQ_API_KEY`) - deterministic fallback reasoning")
     st.write("Vendor-risk API: " + ("online" if is_up() else "**unreachable** (results will flag it)"))
     st.write(f"Policy reference date: `{reference_date()}`")
     st.caption("The copilot only recommends. Purchases, spend approvals, budget changes and legal terms stay with humans.")
@@ -86,6 +86,10 @@ def show_decision(key: str, decision) -> None:
     tel = decision.telemetry
     with st.expander(f"Run trace - {tel.llm_calls} LLM call(s), {tel.tool_calls} tool call(s), mode {tel.mode}"):
         st.write(" -> ".join(tel.tool_names))
+        if tel.llm_providers:
+            st.write("LLM calls: " + ", ".join(tel.llm_providers))
+        if tel.llm_error:
+            st.write(f"Model error: {tel.llm_error}")
         st.json(decision.model_dump(), expanded=False)
 
     st.markdown("#### Human review")

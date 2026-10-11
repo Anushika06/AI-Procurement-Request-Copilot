@@ -36,7 +36,7 @@ def run_staged(request: dict) -> ProcurementDecision:
         toolbox.call("run_policy_checks")
         judgement = heuristic_judgement(request, toolbox)
         judgement["rationale"] = f"Analyst model unavailable ({str(exc)[:120]}); deterministic fallback used."
-        return build_decision(request, toolbox, judgement, telemetry, "llm_fallback")
+        return build_decision(request, toolbox, judgement, telemetry, "llm_fallback", str(exc))
 
     toolbox.call("run_policy_checks")
     handoff = {
@@ -47,7 +47,7 @@ def run_staged(request: dict) -> ProcurementDecision:
     try:
         judgement = parse_json(_ask(llm, telemetry, reviewer_system(),
                                     f"{request_block(request)}\n<handoff>\n{json.dumps(handoff, indent=2)}\n</handoff>"))
-        mode = "llm"
+        mode, error = "llm", None
     except LLMError as exc:
         judgement = {
             "need_summary": analyst.get("need_summary"),
@@ -55,11 +55,11 @@ def run_staged(request: dict) -> ProcurementDecision:
             "overlap_reason": analyst.get("overlap_reason"),
             "rationale": f"Reviewer model unavailable ({str(exc)[:120]}); analyst judgement used with policy-engine output.",
         }
-        mode = "llm_fallback"
-    return build_decision(request, toolbox, judgement, telemetry, mode)
+        mode, error = "llm_fallback", str(exc)
+    return build_decision(request, toolbox, judgement, telemetry, mode, error)
 
 
 def _ask(llm: LLMClient, telemetry: RunTelemetryCounter, system: str, user: str) -> str:
     message = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": user}])
-    telemetry.record_llm_call()
+    telemetry.record_llm_call(llm.last_used)
     return message.content

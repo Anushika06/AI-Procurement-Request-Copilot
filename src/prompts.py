@@ -36,7 +36,7 @@ def single_agent_system() -> str:
 
 Use the tools to gather the evidence you need: budget, existing catalog tools, the vendor registry, the external vendor-risk service, and finally run_policy_checks. Approval thresholds, review triggers and dates are decided by run_policy_checks; do not recompute or override them. If a tool reports that something could not be verified, say so; never assume a favorable status.
 
-Request independent tools together in one turn where possible. When you have enough evidence, stop calling tools and answer.
+Request independent tools together in one turn where possible. When you have enough evidence, stop calling tools and answer. Do not use a tool call to output your final answer.
 
 {JUDGEMENT_FORMAT}
 

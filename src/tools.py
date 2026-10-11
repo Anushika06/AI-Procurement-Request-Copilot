@@ -170,7 +170,7 @@ TOOL_DESCRIPTIONS = {
 }
 
 TOOL_SCHEMAS = [
-    {"type": "function", "function": {"name": name, "description": desc, "parameters": {"type": "object", "properties": {}}}}
+    {"type": "function", "function": {"name": name, "description": desc}}
     for name, desc in TOOL_DESCRIPTIONS.items()
 ]
 
