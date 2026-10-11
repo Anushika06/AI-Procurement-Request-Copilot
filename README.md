@@ -9,6 +9,7 @@ FDE Assessment 3. All data is synthetic and comes from the starter pack.
 | [`docs/architecture.md`](docs/architecture.md) | Architecture and workflow diagrams |
 | [`docs/decision_memo.md`](docs/decision_memo.md) | Architecture decision memo |
 | [`evals/results/summary_offline.md`](evals/results/summary_offline.md) | Offline evaluation baseline; live LLM runs write `summary_live.md` |
+| [`evals/results/summary_live.md`](evals/results/summary_live.md) | Live evaluation on Groq `openai/gpt-oss-120b` (same 15 cases, both architectures) |
 
 ---
 
@@ -268,27 +269,43 @@ These results are from offline mode (recorded without an API key):
 | Policy / deterministic rules followed | 15/15 | 15/15 |
 | Human escalation correct | 15/15 | 15/15 |
 | Vendor API down: safe degradation | 15/15 | 15/15 |
-| Avg latency (ms, offline) | ~20 | ~22 |
-| Avg LLM calls | 0 offline; 2-3 with LLM (tool loop) | 0 offline; 2 with LLM (fixed) |
+| Avg latency (ms, offline) | ~18 | ~17 |
+| Avg LLM calls | 0 | 0 |
 | Avg tool calls | 5 | 5 |
 
 Per-case details are in `evals/results/summary_offline.md` and `evals/results/comparison_offline.csv`. The starter harness output is in `evals/results_single.csv` and `evals/results_staged.csv`.
 
 With a key set, `python evals/compare.py` runs everything in LLM mode and writes `summary_live.md` and `comparison_live.csv` with measured latency and LLM call counts. The offline baseline is not touched.
 
+Live results, pinned to Groq `openai/gpt-oss-120b` (all 30 rows in `llm` mode, one run per case):
+
+| Metric | Single agent (A) | Staged / 2-agent (B) |
+|---|---:|---:|
+| Public cases passing minimum checks | 6/6 | 6/6 |
+| Correct next action | 13/15 | 14/15 |
+| Evidence grounded in tool results | 15/15 | 15/15 |
+| Policy / deterministic rules followed | 14/15 | 15/15 |
+| Human escalation correct | 14/15 | 15/15 |
+| Vendor API down: safe degradation | 15/15 | 15/15 |
+| Avg / p95 latency (s) | 37.4 / 55.4 | 23.3 / 31.8 |
+| Avg LLM calls | 4.87 | 2.00 |
+| Avg tool calls | 5 | 5 |
+
+A missed EXT-03: it sent TaskFlow Pro to standard approval instead of redirecting to the existing TaskFlow licence, and dropped the overlap flag. Both architectures missed SYN-01, holding an unknown vendor that duplicates MetricLoop for vendor verification instead of redirecting to the existing tool. That is a safe outcome, but it is the wrong next action.
+
 ---
 
 ## Architecture comparison and ship decision
 
-On this test set the two architectures are equivalent on every quality metric. The policy engine owns approvals, flags and escalation, and neither architecture's model output can override it. B's reviewer re-checks a decision the engine has already made, and it costs a second prompt, a handoff format and an extra failure path.
+Offline, the two architectures are equivalent on every quality metric, because the policy engine owns approvals, flags and escalation and the overlap judgement is a heuristic. The live run is what separates them. B was at least as good on every quality metric (14/15 vs 13/15 correct actions, 15/15 vs 14/15 on policy and escalation). It used 2.00 LLM calls per request against A's 4.87, because gpt-oss makes one tool call per turn. It was also faster: 23.3 s vs 37.4 s on average, 31.8 s vs 55.4 s at p95. B's extra cost is a second prompt, a handoff format and an extra failure path.
 
-**Decision: ship A (single agent + deterministic policy engine).** It has fewer moving parts and the same measured quality. The guard removes A's main risk, which is skipped tools. The full reasoning is in [`docs/decision_memo.md`](docs/decision_memo.md).
+**Decision: ship B (staged analyst -> reviewer + deterministic policy engine).** It matched or beat A on quality and was cheaper and faster on the same test set. The accuracy gap is one case on one model and one run, so the cost and predictability advantage carries most of the weight. The full reasoning is in [`docs/decision_memo.md`](docs/decision_memo.md).
 
 ---
 
 ## Known limitations
 
-- The reported numbers are from offline mode. The LLM's overlap judgement has not been measured against labelled cases yet.
+- The live evaluation is a single run (`--repeats 1`) on one model (Groq `openai/gpt-oss-120b`) over 15 cases; Gemini has not been evaluated live. The overlap judgement has not been measured against human-labelled cases.
 - The offline overlap heuristic is keyword-based. For example, it treats "advanced" or "additional" in the justification as an expansion.
 - Prompt-injection detection is regex-based and will miss paraphrased attacks. The impact is limited because model output cannot change approvals or flags.
 - Sensitivity rules use keywords on `data_access_level` and integration names.
@@ -296,10 +313,11 @@ On this test set the two architectures are equivalent on every quality metric. T
 - The policy engine encodes this policy version (2026.09) in code. A policy change means a code change, with tests.
 - Provider fallback is a product availability feature. Gemini and Groq are different models, so their results are never mixed in one evaluation; results from a Groq-pinned run describe the Groq model, not Gemini.
 - Groq's gpt-oss models do not make parallel tool calls, so Architecture A uses about one LLM call per tool (up to 6 per request) on Groq. With Groq's published Developer-plan limits for gpt-oss (8K tokens/minute, 200K tokens/day) a full A+B run needs pacing and may not fit in one day. Check your account's limits.
-- Overlap labels are checked against the catalog in code. A request that adds capacity to the same vendor's approved product in the same category (more seats or users, an add-on, an expansion; e.g. PUB-01, SignFlow) is classified as `expansion` even if the model says `none`, `overlap_review` or `existing_tool_sufficient`, unless the existing approval is limited-use and the data is sensitive. Tier words alone ("upgrade", "advanced") do not overrule the model, because a higher tier may well be covered by the existing licence. A model `none` while related products exist, or `expansion` of a different vendor's product, is re-derived by the deterministic check, so competing tools (PUB-02) and redundant tier upgrades (EXT-03) keep their overlap flag. When `overlap_review` is set, the recommendation and next step ask Procurement to confirm the stated gap first. These signals are keyword-based.
+- Overlap labels are checked against the catalog in code. A request that adds capacity to the same vendor's approved product in the same category (more seats or users, an add-on, an expansion; e.g. PUB-01, SignFlow) is classified as `expansion` even if the model says `none`, `overlap_review` or `existing_tool_sufficient`, unless the existing approval is limited-use and the data is sensitive. Tier words alone ("upgrade", "advanced") do not overrule the model, because a higher tier may well be covered by the existing licence. A model `none` while related products exist, or `expansion` of a different vendor's product, is re-derived by the deterministic check, so competing tools (PUB-02) keep their overlap flag. A same-vendor `expansion` from the model is accepted as-is, which is how Architecture A lost the EXT-03 overlap flag in the live run. When `overlap_review` is set, the recommendation and next step ask Procurement to confirm the stated gap first. These signals are keyword-based.
 - A vendor security review dated after the policy reference date is treated as invalid, not current: it is flagged `vendor_review_date_invalid`, requires Security and routes the request to manual verification.
 - The prompt-injection scan covers string items inside list fields (e.g. `requested_integrations`) as well as top-level text. Costs and user counts must be real numbers: booleans, NaN, negatives and strings count as missing, and user counts must be whole numbers (3 or 3.0).
-- Live use so far is limited to single-case smoke runs (PUB-01 on Gemini and on Groq). No full live comparison has completed, so every reported number is offline. The `json` pseudo-tool workaround and the overlap fix are verified with mocked responses only.
+- One full live comparison has completed, on Groq only. The `json` pseudo-tool workaround is exercised by that run, but it is not tested separately against live responses.
+- Running `compare.py --resume` when no `live_progress.csv` exists writes progress rows without a CSV header, so a later resume would misread the file. The final `comparison_live.csv` is not affected.
 
 ---
 

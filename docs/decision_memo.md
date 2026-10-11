@@ -2,27 +2,24 @@
 
 ## Decision
 
-Ship **Architecture A, the single agent**, with the deterministic policy engine and guardrails it already uses.
+Ship **Architecture B, the staged analyst -> reviewer variant**, with the same deterministic policy engine and guardrails.
 
 ---
 
 ## Evidence
 
-Both architectures ran on the same 15 cases: 6 public, the other 4 dataset requests, and 5 synthetic hidden-style requests. Source: `python evals/compare.py` -> `evals/results/summary_offline.md`.
+Both architectures ran the same 15 cases (6 public, 4 other dataset requests, 5 synthetic). Offline (`summary_offline.md`) both score 15/15 on every metric, because overlap is a heuristic there. The live run (`summary_live.md`, pinned to `groq:openai/gpt-oss-120b`, all 30 rows in `llm` mode, one run per case) separates them:
 
-| Metric | Single | Staged |
+| Live metric | Single | Staged |
 |---|---:|---:|
-| Public minimum checks | 6/6 | 6/6 |
-| Correct next action | 15/15 | 15/15 |
-| Grounded evidence | 15/15 | 15/15 |
-| Policy rules (exact approvals/flags) | 15/15 | 15/15 |
-| Human escalation correct | 15/15 | 15/15 |
-| Vendor API down, safe result | 15/15 | 15/15 |
-| Avg latency (offline) | ~20 ms | ~22 ms |
-| LLM calls / request | 2-3 | 2 |
-| Tool calls / request | 5 | 5 |
+| Correct next action | 13/15 | 14/15 |
+| Policy rules (exact approvals/flags) | 14/15 | 15/15 |
+| Human escalation correct | 14/15 | 15/15 |
+| Public checks, grounding, API down | all pass | all pass |
+| Avg / p95 latency | 37.4 / 55.4 s | 23.3 / 31.8 s |
+| LLM calls / request | 4.87 | 2.00 |
 
-These numbers were recorded in offline mode because no API key was available. Offline, the overlap judgement is a heuristic, so the two architectures give identical outputs. The LLM call counts are structural rather than measured. Scripted-model tests (`tests/test_agents.py`) cover LLM-mode behaviour: skipped tools still run, approval claims are discarded, overlap with no catalog match is rejected, and model failures fall back safely.
+A missed EXT-03: it sent TaskFlow Pro to standard approval instead of redirecting to the existing TaskFlow licence and dropped the overlap flag. B got it right. Both missed SYN-01, holding a duplicate new vendor for verification: safe, but a shared gap.
 
 ---
 
@@ -30,15 +27,15 @@ These numbers were recorded in offline mode because no API key was available. Of
 
 Code makes every high-stakes call: thresholds, budget, Security/Privacy/Legal triggers, the 365-day expiry against the policy reference date, registry conflicts and API outages. The LLM only judges whether an existing tool covers the need, and writes the explanation.
 
-B's reviewer was meant to own policy and risk, but the policy engine already does that, and the reviewer cannot override it. What it actually does is re-check the analyst's overlap call. It never changed approvals, flags or the next action. What it adds is a second prompt, a handoff format and two partial-failure paths.
+Live, A's expected cost advantage disappears: gpt-oss makes one tool call per turn, so A averaged 4.87 LLM calls against B's fixed two. B used 59% fewer calls, had 38% lower average and 43% lower p95 latency, and has a predictable quota footprint, which matters given how often this project hit rate limits.
 
-B's fixed tool plan and fixed call count are real advantages. A's guard closes the tool gap, though, and batching tool calls keeps A at about two LLM calls.
+B costs a second prompt, a handoff format and two partial-failure paths. In return the reviewer re-checks the overlap call, the only model step that changes outcomes; EXT-03, the one differing case, was exactly that.
 
 ---
 
 ## Risks / limitations
 
-- The overlap judgement in LLM mode is still unmeasured. Re-run `compare.py` with a Gemini key and add human-labelled overlap cases.
+- The live evidence is one run on one model over 15 cases, and the accuracy gap is a single case. Repeat with `--repeats 3`, run Gemini live, and add human-labelled overlap cases (SYN-01 shows both still under-call redundant new vendors).
 - The regex injection scan can miss paraphrased attacks. The damage is limited because the model cannot change approvals.
 - The keyword rules for data sensitivity need Security/Privacy sign-off.
 - The review log only lasts for the session. Production needs persistence, auth and an audit trail.
@@ -47,4 +44,4 @@ B's fixed tool plan and fixed call count are real advantages. A's guard closes t
 
 ## Why this is the right MVP
 
-The client needs reliable evidence gathering, consistent rules and a human making the decision. One agent on top of a deterministic engine delivers all three, with one prompt to maintain and one place to debug. The second agent added no correctness on the same test set, and a simpler system that performs as well is the better one to ship. Revisit B only if live runs show overlap mistakes that a reviewer stage would have caught.
+The client needs reliable evidence gathering, consistent rules, and human decision-making. Both architectures preserve these in code, so the choice comes down to the model workflow. In the live evaluation, B matched or outperformed A on every measured quality metric while using fewer than half the LLM calls and delivering lower average and p95 latency. Despite the added orchestration complexity, B is the better choice for this MVP on the available evidence. Reconsider A if repeated evaluations show that a model with parallel tool-calling capabilities can match B's quality at comparable or lower cost.

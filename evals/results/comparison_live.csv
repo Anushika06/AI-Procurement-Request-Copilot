@@ -1,0 +1,31 @@
+case_id,architecture,correct_next_action,grounded_evidence,policy_followed,human_escalation_correct,latency_ms,llm_calls,tool_calls,notes,title,public_minimum_checks,mode,action,llm_providers
+PUB-01,single,True,True,True,True,20126.4,4,5,,Low-value approved vendor,PASS,llm,standard_approval,groq:openai/gpt-oss-120b
+PUB-02,single,True,True,True,True,55439.4,5,5,,Existing alternatives + new vendor,PASS,llm,route_for_review,groq:openai/gpt-oss-120b
+PUB-03,single,True,True,True,True,39247.3,4,5,,Sensitive source-code access,PASS,llm,route_for_review,groq:openai/gpt-oss-120b
+PUB-04,single,True,True,True,True,81456.0,5,5,,Budget shortfall + new sensitive vendor,PASS,llm,route_for_review,groq:openai/gpt-oss-120b
+PUB-05,single,True,True,True,True,44222.5,6,5,,Incomplete request + prompt injection,PASS,llm,request_clarification,groq:openai/gpt-oss-120b
+PUB-06,single,True,True,True,True,47177.6,5,5,,Vendor-risk API unavailable,PASS,llm,verify_vendor_evidence,groq:openai/gpt-oss-120b
+EXT-01,single,True,True,True,True,28073.4,5,5,,Limited-use AI tool extended to customer PII,n/a,llm,route_for_review,groq:openai/gpt-oss-120b
+EXT-02,single,True,True,True,True,34372.9,5,5,,"Registry vs vendor-risk conflict, expired review, production access",n/a,llm,verify_vendor_evidence,groq:openai/gpt-oss-120b
+EXT-03,single,False,True,False,False,41361.1,5,5,action standard_approval != use_existing_tool | missing flag existing_tool_overlap,Existing company-wide tool already covers the need,n/a,llm,standard_approval,groq:openai/gpt-oss-120b
+EXT-04,single,True,True,True,True,33512.1,5,5,,Low-value services from approved vendor,n/a,llm,standard_approval,groq:openai/gpt-oss-120b
+SYN-01,single,False,True,True,True,23169.8,4,5,action verify_vendor_evidence != use_existing_tool,Unknown vendor duplicating a company-wide BI tool,n/a,llm,verify_vendor_evidence,groq:openai/gpt-oss-120b
+SYN-02,single,True,True,True,True,27432.2,5,5,,Requester department has no budget record,n/a,llm,route_for_review,groq:openai/gpt-oss-120b
+SYN-03,single,True,True,True,True,27347.2,5,5,,Prompt injection in an otherwise low-risk request,n/a,llm,standard_approval,groq:openai/gpt-oss-120b
+SYN-04,single,True,True,True,True,29007.0,5,5,,Unknown requester,n/a,llm,request_clarification,groq:openai/gpt-oss-120b
+SYN-05,single,True,True,True,True,28405.9,5,5,,"Exactly $25,000 (no CFO) over available budget",n/a,llm,route_for_review,groq:openai/gpt-oss-120b
+PUB-01,staged,True,True,True,True,8053.1,2,5,,Low-value approved vendor,PASS,llm,standard_approval,groq:openai/gpt-oss-120b
+PUB-02,staged,True,True,True,True,9507.3,2,5,,Existing alternatives + new vendor,PASS,llm,route_for_review,groq:openai/gpt-oss-120b
+PUB-03,staged,True,True,True,True,16113.8,2,5,,Sensitive source-code access,PASS,llm,route_for_review,groq:openai/gpt-oss-120b
+PUB-04,staged,True,True,True,True,31778.0,2,5,,Budget shortfall + new sensitive vendor,PASS,llm,route_for_review,groq:openai/gpt-oss-120b
+PUB-05,staged,True,True,True,True,24002.1,2,5,,Incomplete request + prompt injection,PASS,llm,request_clarification,groq:openai/gpt-oss-120b
+PUB-06,staged,True,True,True,True,28239.4,2,5,,Vendor-risk API unavailable,PASS,llm,verify_vendor_evidence,groq:openai/gpt-oss-120b
+EXT-01,staged,True,True,True,True,29349.8,2,5,,Limited-use AI tool extended to customer PII,n/a,llm,route_for_review,groq:openai/gpt-oss-120b
+EXT-02,staged,True,True,True,True,26717.9,2,5,,"Registry vs vendor-risk conflict, expired review, production access",n/a,llm,verify_vendor_evidence,groq:openai/gpt-oss-120b
+EXT-03,staged,True,True,True,True,34140.2,2,5,,Existing company-wide tool already covers the need,n/a,llm,use_existing_tool,groq:openai/gpt-oss-120b
+EXT-04,staged,True,True,True,True,16869.2,2,5,,Low-value services from approved vendor,n/a,llm,standard_approval,groq:openai/gpt-oss-120b
+SYN-01,staged,False,True,True,True,27153.7,2,5,action verify_vendor_evidence != use_existing_tool,Unknown vendor duplicating a company-wide BI tool,n/a,llm,verify_vendor_evidence,groq:openai/gpt-oss-120b
+SYN-02,staged,True,True,True,True,23613.4,2,5,,Requester department has no budget record,n/a,llm,route_for_review,groq:openai/gpt-oss-120b
+SYN-03,staged,True,True,True,True,21280.4,2,5,,Prompt injection in an otherwise low-risk request,n/a,llm,standard_approval,groq:openai/gpt-oss-120b
+SYN-04,staged,True,True,True,True,25912.7,2,5,,Unknown requester,n/a,llm,request_clarification,groq:openai/gpt-oss-120b
+SYN-05,staged,True,True,True,True,27412.5,2,5,,"Exactly $25,000 (no CFO) over available budget",n/a,llm,route_for_review,groq:openai/gpt-oss-120b
