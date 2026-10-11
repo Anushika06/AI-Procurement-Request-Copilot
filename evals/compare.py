@@ -38,6 +38,7 @@ from src.solution import analyze_request  # noqa: E402
 
 RESULTS_DIR = ROOT / "evals" / "results"
 LIVE_PROGRESS = "live_progress.csv"
+LIVE_PREVIOUS = "live_progress_previous.csv"
 COLUMNS = ["case_id", "architecture", "correct_next_action", "grounded_evidence", "policy_followed",
            "human_escalation_correct", "latency_ms", "llm_calls", "tool_calls", "notes", "title",
            "public_minimum_checks", "mode", "action", "llm_providers"]
@@ -354,6 +355,12 @@ def main() -> None:
             sys.exit("--resume applies to full LLM runs pinned to one provider.")
         done = load_progress(configured_providers()[0].label)
         print(f"Resuming: {len(done)} completed case(s) loaded from {LIVE_PROGRESS}.")
+    elif track_progress and (RESULTS_DIR / LIVE_PROGRESS).exists():
+        # A fresh run must never be resumed onto rows from an earlier run (older code or prompts),
+        # even if it fails before its first case completes. Keep the old file aside instead.
+        previous = RESULTS_DIR / LIVE_PREVIOUS
+        (RESULTS_DIR / LIVE_PROGRESS).replace(previous)
+        print(f"Fresh run: earlier progress moved to {_rel(previous)}.")
 
     if llm_attempted:
         chain = " -> ".join(p.label for p in configured_providers())

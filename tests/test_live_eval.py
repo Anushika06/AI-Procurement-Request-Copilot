@@ -115,3 +115,23 @@ def test_offline_run_writes_only_offline_files(vendor_api, monkeypatch, tmp_path
     compare.main()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["comparison_offline.csv", "summary_offline.md"]
     assert "offline" in (tmp_path / "summary_offline.md").read_text(encoding="utf-8").splitlines()[2]
+
+
+def test_fresh_run_failing_on_first_case_cannot_resume_old_rows(live_eval, monkeypatch, capsys):
+    """An earlier run's progress must not be reused after a fresh run that completes nothing."""
+    CountingLLM.fail_after = 3
+    with pytest.raises(SystemExit):
+        run(monkeypatch)
+    CountingLLM.calls, CountingLLM.fail_after = 0, 0
+    with pytest.raises(SystemExit):
+        run(monkeypatch)
+    assert "earlier progress moved to" in capsys.readouterr().out
+    assert not (live_eval / compare.LIVE_PROGRESS).exists()
+    with (live_eval / compare.LIVE_PREVIOUS).open(newline="", encoding="utf-8") as f:
+        assert len(list(csv.DictReader(f))) == 3
+
+    CountingLLM.calls, CountingLLM.fail_after = 0, None
+    run(monkeypatch, "--resume")
+    out = capsys.readouterr().out
+    assert "Resuming: 0 completed case(s)" in out
+    assert "already completed, skipped" not in out

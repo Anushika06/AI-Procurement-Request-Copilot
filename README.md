@@ -45,7 +45,7 @@ Free-tier quotas are small on both providers. A full `compare.py` run makes abou
 ### Tests and evaluation
 
 ```bash
-python -m pytest                                        # 76 tests: policy rules, tools, agents, LLM client, provider fallback, live-eval resume, guardrails
+python -m pytest                                        # 138 tests: policy rules, tools, agents, LLM client, provider fallback, live-eval resume, guardrails
 python evals/run_public_evals.py --architecture single  # starter harness, 6 public cases
 python evals/run_public_evals.py --architecture staged
 python evals/compare.py                                 # both architectures, 15 cases -> evals/results/
@@ -68,6 +68,7 @@ Result files are kept apart so a live run never replaces the offline baseline:
 | `summary_offline.md`, `comparison_offline.csv` | full offline run (no key or `COPILOT_OFFLINE=1`) |
 | `summary_live.md`, `comparison_live.csv` | full LLM run that completed with every case in `llm` mode on one provider |
 | `live_progress.csv` | every completed live case, written as it finishes |
+| `live_progress_previous.csv` | progress from an earlier run, moved aside when a fresh (non-`--resume`) live run starts |
 | `summary_pre_online.md`, `comparison_pre_online.csv`, `summary.md`, `comparison.csv` | earlier offline snapshots, kept for reference |
 
 If a live run stops (quota, outage, model error), the cases it finished stay in `live_progress.csv`. Re-run with the same `--provider` and `--resume` to continue; resume refuses rows from a different `provider:model`.
@@ -212,7 +213,9 @@ On this test set the two architectures are equivalent on every quality metric. T
 - The policy engine encodes this policy version (2026.09) in code. A policy change means a code change, with tests.
 - Provider fallback is a product availability feature. Gemini and Groq are different models, so their results are never mixed in one evaluation; results from a Groq-pinned run describe the Groq model, not Gemini.
 - Groq's gpt-oss models do not make parallel tool calls, so Architecture A uses about one LLM call per tool (up to 6 per request) on Groq. With Groq's published Developer-plan limits for gpt-oss (8K tokens/minute, 200K tokens/day) a full A+B run needs pacing and may not fit in one day. Check your account's limits.
-- Overlap labels are checked against the catalog in code. A request that adds seats, an add-on or an upgrade to the same vendor's approved product in the same category (e.g. PUB-01, SignFlow) is classified as `expansion` even if the model says `none`, `overlap_review` or `existing_tool_sufficient`, unless the existing approval is limited-use and the data is sensitive. A model `none` while related products exist, or `expansion` of a different vendor's product, is re-derived by the deterministic check, so competing tools (PUB-02) and redundant tier upgrades (EXT-03) keep their overlap flag. The expansion signal is keyword-based.
+- Overlap labels are checked against the catalog in code. A request that adds capacity to the same vendor's approved product in the same category (more seats or users, an add-on, an expansion; e.g. PUB-01, SignFlow) is classified as `expansion` even if the model says `none`, `overlap_review` or `existing_tool_sufficient`, unless the existing approval is limited-use and the data is sensitive. Tier words alone ("upgrade", "advanced") do not overrule the model, because a higher tier may well be covered by the existing licence. A model `none` while related products exist, or `expansion` of a different vendor's product, is re-derived by the deterministic check, so competing tools (PUB-02) and redundant tier upgrades (EXT-03) keep their overlap flag. When `overlap_review` is set, the recommendation and next step ask Procurement to confirm the stated gap first. These signals are keyword-based.
+- A vendor security review dated after the policy reference date is treated as invalid, not current: it is flagged `vendor_review_date_invalid`, requires Security and routes the request to manual verification.
+- The prompt-injection scan covers string items inside list fields (e.g. `requested_integrations`) as well as top-level text. Costs and user counts must be real numbers: booleans, NaN, negatives and strings count as missing, and user counts must be whole numbers (3 or 3.0).
 - Live use so far is limited to single-case smoke runs (PUB-01 on Gemini and on Groq). No full live comparison has completed, so every reported number is offline. The `json` pseudo-tool workaround and the overlap fix are verified with mocked responses only.
 
 ## Changes to the starter pack

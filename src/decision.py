@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from src.contracts import EvidenceItem, ProcurementDecision, RunTelemetry
-from src.policy import EXPANSION_PATTERN, GAP_PATTERN, REVIEW_APPROVALS, data_triggers_security, find_injection
+from src.policy import CAPACITY_PATTERN, EXPANSION_PATTERN, GAP_PATTERN, REVIEW_APPROVALS, data_triggers_security, find_injection
 from src.telemetry import RunTelemetryCounter
 from src.tools import ToolBox
 
@@ -29,17 +29,17 @@ APPROVAL_CLAIM = re.compile(
 )
 
 
-def same_product_expansion(request: dict, catalog: dict) -> dict | None:
+def same_product_expansion(request: dict, catalog: dict, pattern=EXPANSION_PATTERN) -> dict | None:
     """Catalog entry this request extends (more seats, add-on, upgrade of the same vendor's
     approved product in the same category), or None.
 
-    Deterministic: same vendor + same category + an expansion signal in the justification.
+    Deterministic: same vendor + same category + a signal from `pattern` in the justification.
     Not applied when the existing approval is limited-use and the request involves sensitive
     data, because then the current approval does not cover the new use (policy section 8).
     """
     vendor = (request.get("vendor_name") or "").strip().lower()
     same = [m for m in catalog.get("category_matches", []) if m["vendor_name"].strip().lower() == vendor]
-    if not same or not EXPANSION_PATTERN.search(request.get("business_justification") or ""):
+    if not same or not pattern.search(request.get("business_justification") or ""):
         return None
     if data_triggers_security(request.get("data_access_level")) and any("limited" in m["status"].lower() for m in same):
         return None
@@ -96,10 +96,10 @@ def safe_model_text(text: object, limit: int = 700) -> str | None:
 def choose_action(checks: dict, overlap: str) -> str:
     if checks["missing_information"]:
         return CLARIFY
+    if checks["vendor_assessment"]["state"] in {"unavailable", "conflicting", "invalid_date"}:
+        return VERIFY
     if overlap == "existing_tool_sufficient":
         return USE_EXISTING
-    if checks["vendor_assessment"]["state"] in {"unavailable", "conflicting"}:
-        return VERIFY
     if REVIEW_APPROVALS & set(checks["required_approvals"]) or checks["budget_status"] in {"insufficient", "unverified"}:
         return ROUTE
     return STANDARD
@@ -111,7 +111,25 @@ def _join(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def describe_action(action: str, request: dict, checks: dict, catalog: dict, requester: dict | None) -> tuple[str, str]:
+def describe_action(
+    action: str, request: dict, checks: dict, catalog: dict, requester: dict | None, overlap: str = "none"
+) -> tuple[str, str]:
+    recommendation, next_step = _describe(action, checks, catalog, requester)
+    if overlap != "overlap_review" or action in {CLARIFY, USE_EXISTING}:
+        return recommendation, next_step
+    names = _join([m["product_name"] for m in catalog.get("category_matches", [])])
+    check = f"Procurement must confirm the stated gap versus existing {names} (policy §3)"
+    if action == STANDARD:
+        approvals = _join(checks["required_approvals"])
+        return (
+            f"Validate overlap with {names}, then route for {approvals} approval",
+            f"{check}, then send to {approvals} for approval with the evidence pack attached. Procurement places "
+            "the order only after approval is recorded.",
+        )
+    return recommendation, f"{next_step} {check}."
+
+
+def _describe(action: str, checks: dict, catalog: dict, requester: dict | None) -> tuple[str, str]:
     approvals = checks["required_approvals"]
     reviews = [a for a in approvals if a in REVIEW_APPROVALS]
     business = [a for a in approvals if a not in REVIEW_APPROVALS]
@@ -137,7 +155,10 @@ def describe_action(action: str, request: dict, checks: dict, catalog: dict, req
         )
     if action == VERIFY:
         state = checks["vendor_assessment"]["state"]
-        problem = "could not be retrieved" if state == "unavailable" else "is conflicting between sources"
+        problem = {
+            "unavailable": "could not be retrieved",
+            "invalid_date": "has a review date after the policy reference date",
+        }.get(state, "is conflicting between sources")
         return (
             "Hold for manual verification - vendor security evidence " + problem,
             f"Security and Procurement to verify the vendor's current security assessment manually, then complete "
@@ -194,7 +215,9 @@ def build_decision(
 
     matches = catalog.get("category_matches", [])
     vendor = (request.get("vendor_name") or "").strip().lower()
-    extended = same_product_expansion(request, catalog)
+    # Only capacity signals (more seats, add-ons) can overrule the model; a bare "upgrade"
+    # may well be covered by the existing licence, which is the model's call to make.
+    extended = same_product_expansion(request, catalog, CAPACITY_PATTERN)
     overlap = judgement.get("overlap_assessment")
     if not matches:
         overlap = "none"
@@ -225,7 +248,7 @@ def build_decision(
 
     action = choose_action(checks, overlap)
     requester = toolbox.results["lookup_budget"].get("requester")
-    recommendation, next_step = describe_action(action, request, checks, catalog, requester)
+    recommendation, next_step = describe_action(action, request, checks, catalog, requester, overlap)
 
     evidence = [EvidenceItem(**e) for e in toolbox.evidence()]
     evidence.append(EvidenceItem(source="overlap_assessment", finding=judgement["overlap_reason"], reference=f"Policy §3 ({overlap})"))

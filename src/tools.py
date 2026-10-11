@@ -37,7 +37,7 @@ def lookup_budget(request: dict) -> dict:
     requester = employees.get(request.get("requester_id"))
     department = requester["department"] if requester else None
     budget = budgets.get(department) if department else None
-    cost = request.get("annual_cost_usd") if isinstance(request.get("annual_cost_usd"), (int, float)) else None
+    cost = policy.annual_cost(request)
 
     evidence = []
     if requester is None:

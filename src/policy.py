@@ -5,6 +5,7 @@ thresholds, review triggers and date checks are reproducible and testable.
 """
 from __future__ import annotations
 
+import math
 import re
 from datetime import date
 from functools import lru_cache
@@ -37,6 +38,12 @@ INJECTION_PATTERNS = [
 
 EXPANSION_PATTERN = re.compile(
     r"\b(additional|expand\w*|extra|more (seats|licen[cs]es|users)|add-?on|upgrade\w*|advanced|new (hires|users|team members))\b",
+    re.I,
+)
+# Capacity signals only (more seats/users, add-ons). Tier words such as "upgrade" or
+# "advanced" are left out: on their own they do not show the current licence falls short.
+CAPACITY_PATTERN = re.compile(
+    r"\b(additional|expand\w*|extra|more (seats|licen[cs]es|users)|add-?on|new (hires|users|team members))\b",
     re.I,
 )
 GAP_PATTERN = re.compile(
@@ -97,6 +104,24 @@ def scan_untrusted_text(fields: dict[str, str]) -> list[dict]:
     return findings
 
 
+def annual_cost(request: dict) -> float | None:
+    """Annual cost if it is a real, finite, non-negative number (booleans and strings are not)."""
+    value = request.get("annual_cost_usd")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
+def user_count(request: dict) -> int | None:
+    """Number of users if it is a positive whole number (3 or 3.0, not 3.5 or True)."""
+    value = request.get("user_count")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    if value <= 0 or value != int(value):
+        return None
+    return int(value)
+
+
 def find_missing_information(request: dict, requester: dict | None) -> list[str]:
     """Policy section 1 required fields."""
     missing = []
@@ -104,11 +129,9 @@ def find_missing_information(request: dict, requester: dict | None) -> list[str]
         missing.append("Requester and department (requester not found in employee directory)")
     if is_unknown(request.get("product_name")) or is_unknown(request.get("vendor_name")):
         missing.append("Product and vendor name")
-    cost = request.get("annual_cost_usd")
-    if not isinstance(cost, (int, float)) or cost < 0:
+    if annual_cost(request) is None:
         missing.append("Annual cost or a reasonable annual cost estimate (annual_cost_usd)")
-    users = request.get("user_count")
-    if not isinstance(users, int) or users <= 0:
+    if user_count(request) is None:
         missing.append("Number of users / licenses (user_count)")
 
     justification = request.get("business_justification") or ""
@@ -181,16 +204,21 @@ def assess_vendor_security(registry: dict | None, risk: dict | None, risk_error:
         if reg_date and api_date and reg_date != api_date:
             conflicts.append(f"Review dates differ: registry {reg_date}, vendor-risk service {api_date}")
 
-    expired_sources = []
+    expired_sources, future_sources = [], []
     for label, status, d in (("registry", reg_status, reg_date), ("vendor-risk service", api_status, api_date)):
         days = age(d)
         if status == "expired" or (days is not None and days > ASSESSMENT_VALIDITY_DAYS):
             expired_sources.append(label)
+        if days is not None and days < 0:
+            future_sources.append(label)
 
     if risk is None:
         state = "unavailable"
     elif conflicts:
         state = "conflicting"
+    elif future_sources:
+        # A review dated after the reference date is a data error, not a current assessment.
+        state = "invalid_date"
     elif expired_sources:
         state = "expired"
     elif api_status == "approved" and api_date and age(api_date) <= ASSESSMENT_VALIDITY_DAYS:
@@ -205,6 +233,7 @@ def assess_vendor_security(registry: dict | None, risk: dict | None, risk_error:
         "service_status": api_status,
         "service_review_date": api_date.isoformat() if api_date else None,
         "expired_sources": expired_sources,
+        "future_sources": future_sources,
         "conflicts": conflicts,
         "service_error": risk_error,
     }
@@ -222,7 +251,7 @@ def run_policy_checks(
     requester = budget_result.get("requester")
     registry = registry_result.get("record")
     risk = risk_result.get("data") if risk_result.get("available") else None
-    cost = request.get("annual_cost_usd") if isinstance(request.get("annual_cost_usd"), (int, float)) else None
+    cost = annual_cost(request)
     data_level = request.get("data_access_level")
 
     approvals: set[str] = set()
@@ -285,6 +314,12 @@ def run_policy_checks(
             f"(per {', '.join(vendor['expired_sources'])})",
             "5", "vendor_review_expired", "Security",
         )
+    if vendor["future_sources"]:
+        add(
+            f"Vendor security review date is after the {ref} reference date (per {', '.join(vendor['future_sources'])}); "
+            "it cannot be treated as a current assessment",
+            "5", "vendor_review_date_invalid", "Security",
+        )
     if vendor["state"] == "not_completed":
         add("Vendor security assessment is missing or not completed", "5", "security_review_required", "Security")
     if "Security" in approvals and "security_review_required" not in flags:
@@ -324,7 +359,14 @@ def run_policy_checks(
         )
 
     # Untrusted content (section 9)
-    untrusted = {k: v for k, v in request.items() if isinstance(v, str)}
+    untrusted = {}
+    for key, value in request.items():
+        if isinstance(value, str):
+            untrusted[key] = value
+        elif isinstance(value, (list, tuple)):
+            for i, item in enumerate(value):
+                if isinstance(item, str):
+                    untrusted[f"{key}[{i}]"] = item
     untrusted["vendor_registry_notes"] = (registry or {}).get("notes", "")
     untrusted["vendor_risk_notes"] = (risk or {}).get("notes", "")
     injection = scan_untrusted_text(untrusted)
