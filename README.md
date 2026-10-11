@@ -4,9 +4,60 @@ Internal tool that reviews software/service purchase requests. It gathers eviden
 
 FDE Assessment 3. All data is synthetic and comes from the starter pack.
 
-- Architecture and workflow: [`docs/architecture.md`](docs/architecture.md)
-- Decision memo: [`docs/decision_memo.md`](docs/decision_memo.md)
-- Evaluation results: [`evals/results/summary_offline.md`](evals/results/summary_offline.md) (offline baseline); live LLM runs write `evals/results/summary_live.md`
+| Document | Description |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Architecture and workflow diagrams |
+| [`docs/decision_memo.md`](docs/decision_memo.md) | Architecture decision memo |
+| [`evals/results/summary_offline.md`](evals/results/summary_offline.md) | Offline evaluation baseline; live LLM runs write `summary_live.md` |
+
+---
+
+## Screenshots
+
+### 1. Architecture A vs. Architecture B
+
+| Architecture A - Single agent | Architecture B - Staged (Analyst + Reviewer) |
+|:---:|:---:|
+| ![Architecture A analysis result](screenshots\offline\archA\image.png) | ![Architecture B analysis result](screenshots\offline\archB\image.png) |
+| One agent, tool-calling loop, code guardrails | Fixed tool plan, two LLM calls, JSON handoff |
+
+---
+
+### 2. Offline vs. Online analysis results
+
+| Offline mode (deterministic fallback) | Online mode (live LLM) |
+|:---:|:---:|
+| ![Offline analysis result](screenshots\offline\archA\image.png) | ![Online analysis result](screenshots\online\image.png) |
+| Sidebar shows "offline mode"; overlap is keyword-based | Sidebar shows provider:model; overlap is LLM-judged |
+
+---
+
+### 3. New Request form
+
+| Offline | Online |
+|:---:|:---:|
+| ![New Request form offline](screenshots\offline\archB\image(3).png) | ![New Request form online](screenshots\online\image(3).png) |
+| Same form and pipeline; overlap decided by heuristic | Same form and pipeline; overlap decided by LLM |
+
+---
+
+### 4. Evidence table and run trace
+
+| Offline evidence + trace | Online evidence + trace |
+|:---:|:---:|
+| ![Offline evidence table](screenshots\offline\archB\image(5).png) | ![Online evidence table](screenshots\online\image(5).png) |
+| Mode = `offline`; LLM calls = 0 | Mode = `llm`; provider:model shown in trace |
+
+---
+
+### 5. Human Review form and Review Log
+
+| Human Review form | Review Log |
+|:---:|:---:|
+| ![Human Review form](screenshots\offline\archA\image(1).png) | ![Review Log tab](screenshots\offline\archA\image(2).png) |
+| Reviewer records their own decision; copilot cannot approve | All decisions recorded in the session |
+
+---
 
 ## Setup and run
 
@@ -34,9 +85,17 @@ This starts the vendor-risk mock API on `http://127.0.0.1:8001` and the UI on `h
 
 ### LLM mode vs offline mode
 
-- **LLM mode:** put a Gemini key in `.env` as `GEMINI_API_KEY=...`. You can get one free from Google AI Studio. The default model is `gemini-3.8-flash` (`gemini-2.5-flash` is no longer offered to new projects). Calls go through Gemini's OpenAI-compatible endpoint with the `openai` SDK, so any other OpenAI-compatible provider also works if you set `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY`.
-- **Groq fallback (optional):** add `GROQ_API_KEY` (default model `openai/gpt-oss-120b`). With `LLM_PROVIDER=auto`, a Gemini quota error (429) or outage (5xx/timeouts after retries) switches the call to Groq, and Gemini is skipped for a cooldown period instead of being hit on every call. Request errors (400/401/404) do not fall back, so configuration problems stay visible. `LLM_PROVIDER=gemini` or `groq` pins one provider. Every LLM call records which `provider:model` answered (`telemetry.llm_providers`), and the UI run trace shows it.
-- **Offline mode:** used when there is no key, or when `COPILOT_OFFLINE=1`. The tools and the policy engine run exactly the same way. Only the model's judgement (does an existing tool already cover the need, plus the rationale text) is replaced by a keyword heuristic. Offline mode makes the app, tests and evals runnable anywhere and reproducible.
+| Mode | How to enable | What changes |
+|---|---|---|
+| **LLM** | Set `GEMINI_API_KEY=...` in `.env` | Model judges overlap and writes the rationale |
+| **Groq fallback** | Add `GROQ_API_KEY` | Used automatically when Gemini hits a quota or outage error |
+| **Offline** | No key, or `COPILOT_OFFLINE=1` | Overlap replaced by keyword heuristic; everything else identical |
+
+**LLM mode** uses Gemini's OpenAI-compatible endpoint via the `openai` SDK (default model `gemini-3.8-flash`). Any OpenAI-compatible provider also works with `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY`.
+
+**Groq fallback** (optional): with `LLM_PROVIDER=auto`, a Gemini 429 or 5xx switches the call to Groq and Gemini enters a cooldown. Request errors (400/401/404) do not fall back, so configuration problems stay visible. `LLM_PROVIDER=gemini` or `groq` pins one provider. Every LLM call records which `provider:model` answered (`telemetry.llm_providers`).
+
+**Offline mode** runs the tools and policy engine exactly the same way. Only the model's judgement (overlap assessment and rationale text) is replaced by a keyword heuristic. Offline mode makes the app, tests and evals runnable anywhere and reproducible.
 
 The UI sidebar shows which mode is active.
 
@@ -80,19 +139,26 @@ Rate limits to plan for (check your own account, they change):
 
 The eval scripts start the mock API themselves if it isn't already running.
 
+---
+
 ## Product workflow
 
-```text
-1 Employee request ─> 2 Understand need ─> 3 Gather evidence ─> deterministic policy checks ─> 4 Recommend ─> 5 Human review
-   (queue or form)       (agent)              budget / catalog /       thresholds, triggers,          action +        reviewer records
-                                              vendor / risk API        expiry, conflicts, injection   evidence        the decision
+```mermaid
+flowchart LR
+    A["1. Employee request\n(queue or form)"] --> B["2. Understand need\n(agent)"]
+    B --> C["3. Gather evidence\n(tools)"]
+    C --> D["4. Policy checks\n(deterministic code)"]
+    D --> E["5. Recommend\n(action + evidence)"]
+    E --> F["6. Human review\n(reviewer records decision)"]
 ```
 
 The UI (Streamlit) has three tabs:
 
-- **Request queue:** pick a request and see its details. The justification is shown as untrusted text. Run the review with architecture A or B.
-- **New request:** a form for submitting an ad-hoc request. It goes through the same pipeline.
-- **Review log:** the decisions human reviewers recorded in this session.
+| Tab | Purpose |
+|---|---|
+| **Request queue** | Pick a request and see its details. The justification is shown as untrusted text. Run the review with architecture A or B. |
+| **New request** | A form for submitting an ad-hoc request. Goes through the same pipeline. |
+| **Review log** | The decisions human reviewers recorded in this session. |
 
 Each result shows:
 
@@ -105,29 +171,38 @@ Each result shows:
 
 The copilot cannot approve anything. Only the human decision is recorded.
 
+---
+
 ## Output
 
 `handle_request(request_id, architecture)` in `src/solution.py` returns a `ProcurementDecision`, which carries:
 
-- `recommendation`
-- `evidence`
-- `required_approvals`
-- `missing_information`
-- `risk_flags`
-- `next_step`
-- `human_review_required` (always `true`)
-- `telemetry`
-
-Two optional fields were added: `action`, a machine-readable next-action category, and `rationale`.
+| Field | Notes |
+|---|---|
+| `recommendation` | Human-readable summary |
+| `evidence` | List of sourced evidence items |
+| `required_approvals` | From policy engine only |
+| `missing_information` | From policy engine only |
+| `risk_flags` | From policy engine only |
+| `next_step` | Machine-readable action category |
+| `human_review_required` | Always `true` |
+| `telemetry` | LLM/tool counts, mode, providers |
+| `action` | (added) machine-readable next-action category |
+| `rationale` | (added) short explanation |
 
 The next-action categories are `request_clarification`, `use_existing_tool`, `verify_vendor_evidence`, `route_for_review` and `standard_approval`.
+
+---
 
 ## Architecture
 
 **Design split:**
-- **AI:** understands the need and decides whether an existing tool already covers it, then explains the recommendation.
-- **Code:** handles thresholds, budget, Security/Privacy/Legal triggers, review expiry, conflicts, injection scanning and tool failures.
-- **Human:** approves, makes exceptions and purchases.
+
+| Layer | Responsibility |
+|---|---|
+| **AI** | Understands the need, decides whether an existing tool already covers it, writes the explanation |
+| **Code** | Handles thresholds, budget, Security/Privacy/Legal triggers, review expiry, conflicts, injection scanning and tool failures |
+| **Human** | Approves, makes exceptions and purchases |
 
 **A - Single agent** (`src/single_agent.py`): one Gemini agent with tool calling. It decides which tools to call and returns a JSON judgement. A code guard then runs any tool the agent skipped, so the policy engine always sees full evidence.
 
@@ -163,6 +238,8 @@ evals/expected_outcomes.json   expected action / approvals / flags per case
 tests/               policy, agent (with scripted fake LLM), data and mock API tests
 ```
 
+---
+
 ## Assumptions
 
 The full list is in [`docs/architecture.md`](docs/architecture.md#assumptions). The main ones:
@@ -174,6 +251,8 @@ The full list is in [`docs/architecture.md`](docs/architecture.md#assumptions). 
 - Cross-region storage of sensitive data triggers both Privacy and Legal.
 - A department with no budget row is routed to Finance (`budget_unverified`).
 - Overlap is matched on catalog category. A company-wide or same-department tool with no stated gap leads to `use_existing_tool`. A stated gap, or a limited-use approval that doesn't cover the data class, leads to Procurement validation.
+
+---
 
 ## Evaluation results
 
@@ -197,11 +276,15 @@ Per-case details are in `evals/results/summary_offline.md` and `evals/results/co
 
 With a key set, `python evals/compare.py` runs everything in LLM mode and writes `summary_live.md` and `comparison_live.csv` with measured latency and LLM call counts. The offline baseline is not touched.
 
+---
+
 ## Architecture comparison and ship decision
 
 On this test set the two architectures are equivalent on every quality metric. The policy engine owns approvals, flags and escalation, and neither architecture's model output can override it. B's reviewer re-checks a decision the engine has already made, and it costs a second prompt, a handoff format and an extra failure path.
 
 **Decision: ship A (single agent + deterministic policy engine).** It has fewer moving parts and the same measured quality. The guard removes A's main risk, which is skipped tools. The full reasoning is in [`docs/decision_memo.md`](docs/decision_memo.md).
+
+---
 
 ## Known limitations
 
@@ -218,6 +301,8 @@ On this test set the two architectures are equivalent on every quality metric. T
 - The prompt-injection scan covers string items inside list fields (e.g. `requested_integrations`) as well as top-level text. Costs and user counts must be real numbers: booleans, NaN, negatives and strings count as missing, and user counts must be whole numbers (3 or 3.0).
 - Live use so far is limited to single-case smoke runs (PUB-01 on Gemini and on Groq). No full live comparison has completed, so every reported number is offline. The `json` pseudo-tool workaround and the overlap fix are verified with mocked responses only.
 
+---
+
 ## Changes to the starter pack
 
 - `run_local.py`:
@@ -229,6 +314,8 @@ On this test set the two architectures are equivalent on every quality metric. T
 - Added `openai` and `pytest` to `requirements.txt`.
 - Added an offline `handle_request` smoke test to `verify_setup.py`.
 - Evaluation CSVs are no longer git-ignored, so the results are part of the submission.
+
+---
 
 ## Gemini 3 compatibility
 
