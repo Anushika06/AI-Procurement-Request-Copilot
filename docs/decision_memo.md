@@ -6,7 +6,7 @@ Ship **Architecture A, the single agent**, with the deterministic policy engine 
 
 ## Evidence
 
-Both architectures ran on the same 15 cases: 6 public, the other 4 dataset requests, and 5 synthetic hidden-style requests. Source: `python evals/compare.py` → `evals/results/summary.md`.
+Both architectures ran on the same 15 cases: 6 public, the other 4 dataset requests, and 5 synthetic hidden-style requests. Source: `python evals/compare.py` → `evals/results/summary_offline.md`.
 
 | Metric | Single | Staged |
 |---|---:|---:|

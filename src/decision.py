@@ -29,6 +29,23 @@ APPROVAL_CLAIM = re.compile(
 )
 
 
+def same_product_expansion(request: dict, catalog: dict) -> dict | None:
+    """Catalog entry this request extends (more seats, add-on, upgrade of the same vendor's
+    approved product in the same category), or None.
+
+    Deterministic: same vendor + same category + an expansion signal in the justification.
+    Not applied when the existing approval is limited-use and the request involves sensitive
+    data, because then the current approval does not cover the new use (policy section 8).
+    """
+    vendor = (request.get("vendor_name") or "").strip().lower()
+    same = [m for m in catalog.get("category_matches", []) if m["vendor_name"].strip().lower() == vendor]
+    if not same or not EXPANSION_PATTERN.search(request.get("business_justification") or ""):
+        return None
+    if data_triggers_security(request.get("data_access_level")) and any("limited" in m["status"].lower() for m in same):
+        return None
+    return same[0]
+
+
 def heuristic_overlap(request: dict, catalog: dict) -> tuple[str, str]:
     """Offline stand-in for the model's overlap judgement."""
     matches = catalog.get("category_matches", [])
@@ -38,9 +55,9 @@ def heuristic_overlap(request: dict, catalog: dict) -> tuple[str, str]:
     vendor = (request.get("vendor_name") or "").strip().lower()
     names = ", ".join(m["product_name"] for m in matches)
 
-    same_vendor = [m for m in matches if m["vendor_name"].strip().lower() == vendor]
-    if same_vendor and EXPANSION_PATTERN.search(text):
-        return "expansion", f"Request extends the existing {same_vendor[0]['product_name']} footprint."
+    extended = same_product_expansion(request, catalog)
+    if extended:
+        return "expansion", f"Request extends the existing {extended['product_name']} footprint."
     mentioned = [m for m in matches if m["vendor_name"].lower() in text.lower() or m["product_name"].lower() in text.lower()]
     if mentioned or GAP_PATTERN.search(text):
         return "overlap_review", f"Requester states a gap versus existing {names}; Procurement should validate it."
@@ -175,13 +192,28 @@ def build_decision(
     checks = toolbox.results["run_policy_checks"]
     catalog = toolbox.results["search_catalog"]
 
+    matches = catalog.get("category_matches", [])
+    vendor = (request.get("vendor_name") or "").strip().lower()
+    extended = same_product_expansion(request, catalog)
     overlap = judgement.get("overlap_assessment")
-    if overlap not in OVERLAP_VALUES:
-        overlap, judgement["overlap_reason"] = heuristic_overlap(request, catalog)
-    if not catalog.get("category_matches"):
+    if not matches:
         overlap = "none"
-    elif overlap == "none":
-        overlap = "overlap_review"
+    elif extended and overlap != "expansion":
+        # More seats / an add-on for the same approved product is not a competing tool,
+        # whatever the model called it ("none", "overlap_review", "existing_tool_sufficient"
+        # or something invalid).
+        overlap = "expansion"
+        judgement["overlap_reason"] = (
+            f"Request adds to the existing {extended['product_name']} licence ({extended['software_id']}) "
+            "from the same vendor; this is an expansion, not a competing tool."
+        )
+    elif overlap not in OVERLAP_VALUES or overlap == "none" or (
+        overlap == "expansion" and not any(m["vendor_name"].strip().lower() == vendor for m in matches)
+    ):
+        # Invalid, or contradicted by the catalog: "none" while related products exist, or
+        # "expansion" of a product from a different vendor. Re-derive deterministically;
+        # the heuristic never returns "none" when matches exist.
+        overlap, judgement["overlap_reason"] = heuristic_overlap(request, catalog)
     if overlap == "existing_tool_sufficient" and not any(m["covers_requester"] for m in catalog["category_matches"]):
         overlap = "overlap_review"
     judgement["overlap_assessment"] = overlap
@@ -196,7 +228,7 @@ def build_decision(
     recommendation, next_step = describe_action(action, request, checks, catalog, requester)
 
     evidence = [EvidenceItem(**e) for e in toolbox.evidence()]
-    evidence.append(EvidenceItem(source="overlap_assessment", finding=judgement["overlap_reason"], reference="Policy §3"))
+    evidence.append(EvidenceItem(source="overlap_assessment", finding=judgement["overlap_reason"], reference=f"Policy §3 ({overlap})"))
 
     rationale = safe_model_text(judgement.get("rationale")) or default_rationale(action, checks, judgement)
     summary = safe_model_text(judgement.get("need_summary"), 300) or need_summary(request, toolbox)

@@ -166,3 +166,121 @@ def test_fallback_records_the_model_error(vendor_api, scripted):
     decision = handle_request("REQ-1001", "single")
     assert decision.telemetry.mode == "llm_fallback"
     assert "400" in decision.telemetry.llm_error
+
+
+def judgement(overlap: str, reason: str = "See catalog evidence.") -> str:
+    return json.dumps({"need_summary": "Three more signing identities.", "overlap_assessment": overlap,
+                       "overlap_reason": reason, "rationale": "Follows the policy-engine output."})
+
+
+def test_staged_reviewer_none_on_same_product_addon_is_not_overlap(vendor_api, scripted):
+    """PUB-01 regression: an add-on to the existing SignFlow licence must not be flagged as tool overlap."""
+    scripted.script = [reply(content=judgement("expansion", "More SignFlow seats.")), reply(content=judgement("none"))]
+    decision = handle_request("REQ-1001", "staged")
+    assert decision.action == "standard_approval"
+    assert "existing_tool_overlap" not in decision.risk_flags
+    assert decision.required_approvals == ["Manager"]
+    overlap = next(e for e in decision.evidence if e.source == "overlap_assessment")
+    assert overlap.reference == "Policy §3 (expansion)"
+
+
+def test_single_agent_none_on_same_product_addon_is_not_overlap(vendor_api, scripted):
+    scripted.script = [reply(content=judgement("none"))]
+    decision = handle_request("REQ-1001", "single")
+    assert "existing_tool_overlap" not in decision.risk_flags
+    assert decision.action == "standard_approval"
+
+
+def test_model_cannot_hide_overlap_with_a_competing_tool(vendor_api, scripted):
+    scripted.script = [reply(content=judgement("none")), reply(content=judgement("none"))]
+    decision = handle_request("REQ-1002", "staged")
+    assert "existing_tool_overlap" in decision.risk_flags
+
+
+def test_none_on_redundant_tier_upgrade_still_redirects_to_existing_tool(vendor_api, scripted):
+    scripted.script = [reply(content=judgement("none"))]
+    decision = handle_request("REQ-1008", "single")
+    assert decision.action == "use_existing_tool"
+    assert "existing_tool_overlap" in decision.risk_flags
+
+
+def run_with(scripted, request_id: str, architecture: str, overlap: str):
+    """Run one request with the model answering `overlap` at every LLM step."""
+    scripted.script = [reply(content=judgement(overlap))] * (1 if architecture == "single" else 2)
+    return handle_request(request_id, architecture)
+
+
+@pytest.mark.parametrize("architecture", ["single", "staged"])
+@pytest.mark.parametrize("overlap", ["none", "overlap_review", "existing_tool_sufficient", "expansion", "not-a-valid-value"])
+def test_pub01_same_product_addon_is_never_competing_overlap(vendor_api, scripted, architecture, overlap):
+    decision = run_with(scripted, "REQ-1001", architecture, overlap)
+    assert decision.action == "standard_approval"
+    assert "existing_tool_overlap" not in decision.risk_flags
+    assert decision.required_approvals == ["Manager"]
+    evidence = next(e for e in decision.evidence if e.source == "overlap_assessment")
+    assert evidence.reference == "Policy §3 (expansion)"
+
+
+def test_pub01_reviewer_overriding_analyst_with_overlap_review_is_corrected(vendor_api, scripted):
+    scripted.script = [reply(content=judgement("expansion", "More SignFlow seats.")),
+                       reply(content=judgement("overlap_review", "Check spare seats."))]
+    decision = handle_request("REQ-1001", "staged")
+    assert "existing_tool_overlap" not in decision.risk_flags
+    evidence = next(e for e in decision.evidence if e.source == "overlap_assessment")
+    assert "SignFlow" in evidence.finding and "not a competing tool" in evidence.finding
+
+
+@pytest.mark.parametrize("architecture", ["single", "staged"])
+@pytest.mark.parametrize("overlap", ["none", "overlap_review", "expansion"])
+def test_pub02_competing_tool_overlap_is_kept(vendor_api, scripted, architecture, overlap):
+    """BrandBoard vs PixelCraft/CreativeSuite: a model cannot call a different vendor's tool an expansion."""
+    decision = run_with(scripted, "REQ-1002", architecture, overlap)
+    assert "existing_tool_overlap" in decision.risk_flags
+    assert decision.action == "route_for_review"
+
+
+@pytest.mark.parametrize("architecture", ["single", "staged"])
+@pytest.mark.parametrize("overlap, action", [
+    ("existing_tool_sufficient", "use_existing_tool"),
+    ("none", "use_existing_tool"),
+    ("overlap_review", "standard_approval"),
+])
+def test_ext03_tier_upgrade_without_stated_gap_keeps_overlap(vendor_api, scripted, architecture, overlap, action):
+    """TaskFlow Pro has no expansion signal, so it is not treated as a same-product expansion."""
+    decision = run_with(scripted, "REQ-1008", architecture, overlap)
+    assert "existing_tool_overlap" in decision.risk_flags
+    assert decision.action == action
+
+
+@pytest.mark.parametrize("overlap", ["overlap_review", "existing_tool_sufficient"])
+def test_limited_use_approval_is_not_turned_into_expansion(vendor_api, scripted, overlap):
+    """Same vendor and an expansion word, but the existing approval is limited-use and the data is customer PII."""
+    request = dict(get_request("REQ-1004"))
+    request["business_justification"] = "Additional seats so support agents can draft replies from ticket history."
+    scripted.script = [reply(content=judgement(overlap))]
+    decision = analyze_request(request, "single")
+    assert "existing_tool_overlap" in decision.risk_flags
+    assert {"Security", "Privacy"} <= set(decision.required_approvals)
+    evidence = next(e for e in decision.evidence if e.source == "overlap_assessment")
+    assert evidence.reference == f"Policy §3 ({overlap})"
+
+
+def test_same_product_expansion_helper():
+    from src.decision import same_product_expansion
+
+    signflow = {"software_id": "SW010", "product_name": "SignFlow", "vendor_name": "SignFlow",
+                "status": "Approved", "covers_requester": True}
+    catalog = {"category_matches": [signflow]}
+    base = {"vendor_name": "SignFlow", "data_access_level": "internal_documents"}
+    assert same_product_expansion({**base, "business_justification": "Three additional signing identities."}, catalog) == signflow
+    assert same_product_expansion({**base, "business_justification": "We want e-signatures."}, catalog) is None
+    assert same_product_expansion({**base, "vendor_name": "OtherSign",
+                                   "business_justification": "Additional seats."}, catalog) is None
+
+
+def test_prompts_define_same_product_addons_as_expansion():
+    from src.prompts import ANALYST_SYSTEM, reviewer_system, single_agent_system
+
+    for prompt in (ANALYST_SYSTEM, reviewer_system(), single_agent_system()):
+        assert "More seats or an add-on for the same product is expansion, not overlap" in prompt
+    assert "Keep the analyst's overlap_assessment unless" in reviewer_system()

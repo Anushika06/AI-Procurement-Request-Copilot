@@ -6,7 +6,7 @@ FDE Assessment 3. All data is synthetic and comes from the starter pack.
 
 - Architecture and workflow: [`docs/architecture.md`](docs/architecture.md)
 - Decision memo: [`docs/decision_memo.md`](docs/decision_memo.md)
-- Evaluation results: [`evals/results/summary.md`](evals/results/summary.md)
+- Evaluation results: [`evals/results/summary_offline.md`](evals/results/summary_offline.md) (offline baseline); live LLM runs write `evals/results/summary_live.md`
 
 ## Setup and run
 
@@ -45,7 +45,7 @@ Free-tier quotas are small on both providers. A full `compare.py` run makes abou
 ### Tests and evaluation
 
 ```bash
-python -m pytest                                        # 58 tests: policy rules, tools, agents, LLM client, provider fallback, guardrails
+python -m pytest                                        # 76 tests: policy rules, tools, agents, LLM client, provider fallback, live-eval resume, guardrails
 python evals/run_public_evals.py --architecture single  # starter harness, 6 public cases
 python evals/run_public_evals.py --architecture staged
 python evals/compare.py                                 # both architectures, 15 cases -> evals/results/
@@ -59,7 +59,23 @@ python evals/compare.py --arch single --cases PUB-01
 python evals/compare.py --cases SYN-03,EXT-03
 ```
 
-In LLM mode the run is **pinned to one provider** (the primary one, or `--provider gemini|groq`), so both architectures are compared on the same model. It stops at the first case that falls back to the offline heuristics, or that was answered by a different provider, and prints why. Written results are therefore always a single-model LLM evaluation, and the summary names the `provider:model`. A 429 with a short Retry-After (per-minute limit) is waited out up to `--rate-limit-wait` seconds (default 65); longer limits abort the run. `--delay N` pauses between cases for per-minute rate limits. The offline baseline is kept in `evals/results/summary_offline.md`.
+In LLM mode the run is **pinned to one provider** (the primary one, or `--provider gemini|groq`), so both architectures are compared on the same model. It stops at the first case that falls back to the offline heuristics, or that was answered by a different provider, and prints why. Written results are therefore always a single-model LLM evaluation, and the summary names the `provider:model`. A 429 with a short Retry-After (per-minute limit) is waited out up to `--rate-limit-wait` seconds (default 65); longer limits abort the run. `--delay N` pauses between cases and `--rpm N` spaces individual model calls evenly (N calls per minute).
+
+Result files are kept apart so a live run never replaces the offline baseline:
+
+| File | Written by |
+|---|---|
+| `summary_offline.md`, `comparison_offline.csv` | full offline run (no key or `COPILOT_OFFLINE=1`) |
+| `summary_live.md`, `comparison_live.csv` | full LLM run that completed with every case in `llm` mode on one provider |
+| `live_progress.csv` | every completed live case, written as it finishes |
+| `summary_pre_online.md`, `comparison_pre_online.csv`, `summary.md`, `comparison.csv` | earlier offline snapshots, kept for reference |
+
+If a live run stops (quota, outage, model error), the cases it finished stay in `live_progress.csv`. Re-run with the same `--provider` and `--resume` to continue; resume refuses rows from a different `provider:model`.
+
+Rate limits to plan for (check your own account, they change):
+
+- **Gemini free tier** is limited per model per project, per minute and per day. The daily request cap is the usual blocker (one project here hit 20 requests/day). A 429 that names a per-day quota is not waited out; the provider is put on a 1-hour cooldown. Per-minute 429s carry a retry delay in the response body, which is honoured up to `--rate-limit-wait`.
+- **Groq** documents 30 RPM, 1K RPD, 8K TPM and 200K TPD for `gpt-oss-120b` on its base plan. Each Architecture A call is about 2K input tokens and gpt-oss makes one tool call per turn, so use `--rpm 3` on Groq to stay under 8K tokens/minute. A full A+B run is roughly 300K tokens, so it spans more than one day on those limits; `--resume` makes that possible without losing finished cases.
 
 The eval scripts start the mock API themselves if it isn't already running.
 
@@ -176,9 +192,9 @@ These results are from offline mode (recorded without an API key):
 | Avg LLM calls | 0 offline; 2-3 with LLM (tool loop) | 0 offline; 2 with LLM (fixed) |
 | Avg tool calls | 5 | 5 |
 
-Per-case details are in `evals/results/summary.md` and `evals/results/comparison.csv`. The starter harness output is in `evals/results_single.csv` and `evals/results_staged.csv`.
+Per-case details are in `evals/results/summary_offline.md` and `evals/results/comparison_offline.csv`. The starter harness output is in `evals/results_single.csv` and `evals/results_staged.csv`.
 
-With a key set, `python evals/compare.py` re-runs everything in LLM mode and rewrites `summary.md` and `comparison.csv` with measured latency and LLM call counts. The offline baseline stays in `summary_offline.md` / `comparison_offline.csv`.
+With a key set, `python evals/compare.py` runs everything in LLM mode and writes `summary_live.md` and `comparison_live.csv` with measured latency and LLM call counts. The offline baseline is not touched.
 
 ## Architecture comparison and ship decision
 
@@ -196,7 +212,8 @@ On this test set the two architectures are equivalent on every quality metric. T
 - The policy engine encodes this policy version (2026.09) in code. A policy change means a code change, with tests.
 - Provider fallback is a product availability feature. Gemini and Groq are different models, so their results are never mixed in one evaluation; results from a Groq-pinned run describe the Groq model, not Gemini.
 - Groq's gpt-oss models do not make parallel tool calls, so Architecture A uses about one LLM call per tool (up to 6 per request) on Groq. With Groq's published Developer-plan limits for gpt-oss (8K tokens/minute, 200K tokens/day) a full A+B run needs pacing and may not fit in one day. Check your account's limits.
-- The Groq integration and Gemini 3.8 tool calling are covered by mocked-HTTP tests only; neither has been run against the live APIs from this repo yet.
+- Overlap labels are checked against the catalog in code. A request that adds seats, an add-on or an upgrade to the same vendor's approved product in the same category (e.g. PUB-01, SignFlow) is classified as `expansion` even if the model says `none`, `overlap_review` or `existing_tool_sufficient`, unless the existing approval is limited-use and the data is sensitive. A model `none` while related products exist, or `expansion` of a different vendor's product, is re-derived by the deterministic check, so competing tools (PUB-02) and redundant tier upgrades (EXT-03) keep their overlap flag. The expansion signal is keyword-based.
+- Live use so far is limited to single-case smoke runs (PUB-01 on Gemini and on Groq). No full live comparison has completed, so every reported number is offline. The `json` pseudo-tool workaround and the overlap fix are verified with mocked responses only.
 
 ## Changes to the starter pack
 
@@ -215,4 +232,5 @@ On this test set the two architectures are equivalent on every quality metric. T
 - Architecture A sends the assistant's tool-call message back unchanged, so Gemini's thought signatures (`tool_calls[].extra_content`) survive into the next turn. Gemini 3 models need them for multi-turn tool calling.
 - The tools take no arguments, so their schemas omit `parameters` instead of sending an empty object schema.
 - When a run falls back, the model error is recorded in `telemetry.llm_error`.
+- gpt-oss models on Groq sometimes reply by calling an undeclared `json` tool, which Groq rejects with HTTP 400. When tools are sent to Groq, a `json` pseudo-tool is declared and its arguments are turned back into the plain reply; it is never executed and never shown to the agent loop.
 - Requests sent to Groq contain only standard OpenAI message fields; Gemini-specific fields such as `extra_content` are stripped if a conversation switches provider mid-run.

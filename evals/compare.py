@@ -3,13 +3,16 @@
     python evals/compare.py                                  # LLM mode if GEMINI_API_KEY is set, else offline
     python evals/compare.py --arch single --cases PUB-01     # smoke test, nothing written
     python evals/compare.py --delay 5                        # pause between cases (per-minute rate limits)
-    python evals/compare.py --provider groq                  # pin the provider for the whole run
+    python evals/compare.py --provider groq --rpm 3          # pin the provider, space out calls
+    python evals/compare.py --provider groq --resume         # continue an interrupted live run
 
-A full run writes evals/results/comparison.csv and evals/results/summary.md.
-In LLM mode the run is pinned to one provider (the primary one by default) so
-both architectures are compared on the same model. It stops at the first case
-that falls back to the offline heuristics or that used a different provider,
-so a written result is always a single-model LLM evaluation.
+A full offline run writes evals/results/summary_offline.md and comparison_offline.csv.
+A full LLM run writes summary_live.md and comparison_live.csv, so live results never
+replace the offline baseline. LLM runs are pinned to one provider (the primary one by
+default) so both architectures are compared on the same model, and stop at the first
+case that falls back to the offline heuristics or that used a different provider.
+Each completed live case is saved to live_progress.csv as it finishes, so an
+interrupted run (e.g. quota exhausted) can be continued with --resume.
 """
 from __future__ import annotations
 
@@ -34,6 +37,11 @@ from src.mock_server import mock_api_running  # noqa: E402
 from src.solution import analyze_request  # noqa: E402
 
 RESULTS_DIR = ROOT / "evals" / "results"
+LIVE_PROGRESS = "live_progress.csv"
+COLUMNS = ["case_id", "architecture", "correct_next_action", "grounded_evidence", "policy_followed",
+           "human_escalation_correct", "latency_ms", "llm_calls", "tool_calls", "notes", "title",
+           "public_minimum_checks", "mode", "action", "llm_providers"]
+BOOL_COLUMNS = ("correct_next_action", "grounded_evidence", "policy_followed", "human_escalation_correct")
 ARCHITECTURES = ["single", "staged"]
 REVIEWS = {"Security", "Privacy", "Legal"}
 
@@ -264,6 +272,45 @@ def summarise(rows: list[dict], api_down: dict, mode_label: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _rel(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def load_progress(provider_label: str) -> dict[tuple[str, str], dict]:
+    """Completed live rows from an earlier run on the same provider:model."""
+    path = RESULTS_DIR / LIVE_PROGRESS
+    if not path.exists():
+        return {}
+    with path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    other = {r["llm_providers"] for r in rows} - {provider_label}
+    if other:
+        sys.exit(f"{_rel(path)} holds results from {', '.join(sorted(other))}, not {provider_label}. "
+                 "Resume with the same provider, or start a fresh run without --resume.")
+    done = {}
+    for r in rows:
+        for col in BOOL_COLUMNS:
+            r[col] = r[col] == "True"
+        r["latency_ms"] = float(r["latency_ms"])
+        r["llm_calls"], r["tool_calls"] = int(r["llm_calls"]), int(r["tool_calls"])
+        r["public_ok"] = r["public_minimum_checks"] == "PASS"
+        done[(r["architecture"], r["case_id"])] = r
+    return done
+
+
+def save_progress_row(row: dict, fresh: bool) -> None:
+    RESULTS_DIR.mkdir(exist_ok=True)
+    path = RESULTS_DIR / LIVE_PROGRESS
+    with path.open("w" if fresh else "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
+        if fresh:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repeats", type=int, default=1,
@@ -275,7 +322,11 @@ def main() -> None:
                         help="LLM provider for the whole run (default: the primary configured provider; "
                              "'auto' allows fallback but the run still stops if providers get mixed)")
     parser.add_argument("--rate-limit-wait", type=float, default=65.0,
-                        help="max seconds to wait on a 429 with a short Retry-After before giving up")
+                        help="max seconds to wait on a 429 with a short retry delay before giving up")
+    parser.add_argument("--rpm", type=float, default=0.0,
+                        help="max LLM calls per minute (spaces calls evenly; 0 = no limit)")
+    parser.add_argument("--resume", action="store_true",
+                        help="skip cases already completed in evals/results/live_progress.csv (same provider)")
     args = parser.parse_args()
 
     if llm_enabled():
@@ -285,6 +336,8 @@ def main() -> None:
             sys.exit(f"Provider '{provider}' is not configured (configured: {', '.join(available)})")
         os.environ["LLM_PROVIDER"] = provider
         os.environ["LLM_RATE_LIMIT_WAIT"] = str(args.rate_limit_wait)
+        if args.rpm > 0:
+            os.environ["LLM_MIN_CALL_INTERVAL"] = str(60.0 / args.rpm)
     llm_attempted = llm_enabled()
     architectures = ARCHITECTURES if args.arch == "both" else [args.arch]
     wanted = {c.strip() for c in args.cases.split(",") if c.strip()}
@@ -293,6 +346,14 @@ def main() -> None:
     if unknown:
         sys.exit(f"Unknown case id(s): {', '.join(sorted(unknown))}")
     full_run = not wanted and args.arch == "both"
+    track_progress = llm_attempted and full_run
+
+    done: dict[tuple[str, str], dict] = {}
+    if args.resume:
+        if not track_progress or os.environ.get("LLM_PROVIDER") == "auto":
+            sys.exit("--resume applies to full LLM runs pinned to one provider.")
+        done = load_progress(configured_providers()[0].label)
+        print(f"Resuming: {len(done)} completed case(s) loaded from {LIVE_PROGRESS}.")
 
     if llm_attempted:
         chain = " -> ".join(p.label for p in configured_providers())
@@ -304,10 +365,24 @@ def main() -> None:
         print("  Smoke test: results are printed only, nothing is written.")
 
     rows, api_down = [], {}
-    run_providers: set[str] = set()
+    run_providers: set[str] = {r["llm_providers"] for r in done.values()}
+    fresh_progress = not args.resume
+
+    def stop(message: str) -> None:
+        print(message)
+        if track_progress and rows:
+            print(f"{len(rows)} completed case(s) are saved in {_rel(RESULTS_DIR / LIVE_PROGRESS)}; "
+                  "re-run with the same --provider and --resume to continue.")
+        print("Aborted. No summary written.")
+        sys.exit(1)
+
     with mock_api_running():
         for arch in architectures:
             for case in cases:
+                if (arch, case["case_id"]) in done:
+                    rows.append(done[(arch, case["case_id"])])
+                    print(f"  --- {arch:<6} {case['case_id']:<7} already completed, skipped")
+                    continue
                 try:
                     result = run_case(case, arch, args.repeats)
                 except LLMFallbackError as exc:
@@ -317,21 +392,20 @@ def main() -> None:
                     print(f"  {exc.error}")
                     print()
                     if exc.is_quota:
-                        print("Wait for the quota to reset, use --delay for per-minute limits, or enable billing.")
-                    else:
-                        print("Fix the model/request problem above before spending quota on a full run.")
-                    print("Aborted. No results written.")
-                    sys.exit(1)
+                        stop("Wait for the quota to reset, lower --rpm / raise --delay for per-minute limits, "
+                             "or enable billing.")
+                    stop("Fix the model/request problem above before spending quota on a full run.")
                 run_providers.update(result["llm_providers"].split())
                 if len(run_providers) > 1:
                     print()
                     print(f"[MIXED PROVIDERS] {arch}/{case['case_id']} used {result['llm_providers']}; "
                           f"run so far used {', '.join(sorted(run_providers))}.")
-                    print("A comparison across different models is not fair. Re-run pinned, e.g. --provider groq.")
-                    print("Aborted. No results written.")
-                    sys.exit(1)
+                    stop("A comparison across different models is not fair. Re-run pinned, e.g. --provider groq.")
                 result["public_ok"] = result["public_minimum_checks"] == "PASS"
                 rows.append(result)
+                if track_progress:
+                    save_progress_row(result, fresh_progress)
+                    fresh_progress = False
                 status = "ok " if result["correct_next_action"] and result["policy_followed"] and result["grounded_evidence"] else "BAD"
                 print(f"  {status} {arch:<6} {case['case_id']:<7} {result['action']:<24} {result['latency_ms']:>8} ms  "
                       f"llm={result['llm_calls']} tools={result['tool_calls']}  mode={result['mode']}  "
@@ -347,19 +421,18 @@ def main() -> None:
         return
 
     mode_label = _derive_mode_label(rows, llm_attempted)
+    suffix = "live" if llm_attempted else "offline"
+    csv_path, md_path = RESULTS_DIR / f"comparison_{suffix}.csv", RESULTS_DIR / f"summary_{suffix}.md"
     RESULTS_DIR.mkdir(exist_ok=True)
-    columns = ["case_id", "architecture", "correct_next_action", "grounded_evidence", "policy_followed",
-               "human_escalation_correct", "latency_ms", "llm_calls", "tool_calls", "notes", "title",
-               "public_minimum_checks", "mode", "action", "llm_providers"]
-    with (RESULTS_DIR / "comparison.csv").open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     summary = summarise(rows, api_down, mode_label)
-    (RESULTS_DIR / "summary.md").write_text(summary, encoding="utf-8")
+    md_path.write_text(summary, encoding="utf-8")
     print()
     print(summary.split("## Per-case")[0])
-    print(f"Written: {(RESULTS_DIR / 'comparison.csv').relative_to(ROOT)}, {(RESULTS_DIR / 'summary.md').relative_to(ROOT)}")
+    print(f"Written: {_rel(csv_path)}, {_rel(md_path)}")
 
 
 if __name__ == "__main__":

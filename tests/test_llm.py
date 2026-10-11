@@ -187,3 +187,52 @@ def test_groq_json_empty_arguments_safe_failure(monkeypatch):
     assert message.tool_calls is None
     with pytest.raises(llm.LLMError, match="no content"):
         llm.parse_json(message.content)
+
+
+def _gemini_429_then_ok(monkeypatch, error_body: dict):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("LLM_RATE_LIMIT_WAIT", "30")
+    slept = []
+    monkeypatch.setattr(llm.time, "sleep", slept.append)
+    responses = [httpx.Response(429, json=error_body), httpx.Response(200, json=COMPLETION)]
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return responses.pop(0)
+
+    return llm.LLMClient(http_client=httpx.Client(transport=httpx.MockTransport(handler))), sent, slept
+
+
+def test_gemini_retry_delay_in_body_is_honoured(monkeypatch):
+    body = [{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Rate limit. Please retry in 12.5s.",
+                       "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "12s"}]}}]
+    client, sent, slept = _gemini_429_then_ok(monkeypatch, body)
+    client.chat([{"role": "user", "content": "hi"}])
+    assert len(sent) == 2
+    assert 12.0 in slept
+
+
+def test_gemini_daily_quota_is_not_waited_out(monkeypatch):
+    body = [{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                       "message": "Quota exceeded for metric generate_content_free_tier_requests, limit: 20",
+                       "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                                    "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},
+                                   {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "5s"}]}}]
+    client, sent, slept = _gemini_429_then_ok(monkeypatch, body)
+    with pytest.raises(llm.LLMError) as err:
+        client.chat([{"role": "user", "content": "hi"}])
+    assert err.value.is_quota
+    assert len(sent) == 1 and slept == []
+    assert llm._cooldown_until["gemini"] - llm.time.monotonic() > 3000
+
+
+def test_min_call_interval_spaces_calls(monkeypatch):
+    client, sent = make_client(monkeypatch, [200, 200])
+    monkeypatch.setenv("LLM_MIN_CALL_INTERVAL", "10")
+    slept = []
+    monkeypatch.setattr(llm.time, "sleep", slept.append)
+    client.chat([{"role": "user", "content": "a"}])
+    client.chat([{"role": "user", "content": "b"}])
+    assert len(slept) == 1 and 9.0 < slept[0] <= 10.0

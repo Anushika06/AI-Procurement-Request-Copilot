@@ -81,13 +81,15 @@ def run() -> None:
             failures = evaluate(decision, case['expectations'])
             passed = not failures
             tel = decision.telemetry
-            print(f"{'PASS' if passed else 'FAIL'}  {case['case_id']}  {case['title']}  ({latency_ms:.0f} ms)")
+            mode = tel.mode if tel else ''
+            print(f"{'PASS' if passed else 'FAIL'}  {case['case_id']}  {case['title']}  ({latency_ms:.0f} ms, mode={mode})")
             for f in failures:
                 print(f"      - {f}")
             rows.append({
                 'case_id':case['case_id'], 'request_id':case['request_id'], 'architecture':args.architecture,
                 'passed_minimum_checks':passed, 'latency_ms':round(latency_ms,1),
                 'llm_calls': tel.llm_calls if tel else '', 'tool_calls': tel.tool_calls if tel else '',
+                'mode': mode, 'llm_providers': ' '.join(sorted(set(tel.llm_providers))) if tel else '',
                 'failures':' | '.join(failures)
             })
         except NotImplementedError as exc:
@@ -99,7 +101,8 @@ def run() -> None:
             rows.append({
                 'case_id':case['case_id'], 'request_id':case['request_id'], 'architecture':args.architecture,
                 'passed_minimum_checks':False, 'latency_ms':round(latency_ms,1),
-                'llm_calls':'', 'tool_calls':'', 'failures':f"ERROR: {type(exc).__name__}: {exc}"
+                'llm_calls':'', 'tool_calls':'', 'mode':'', 'llm_providers':'',
+                'failures':f"ERROR: {type(exc).__name__}: {exc}"
             })
 
     if rows:
@@ -110,6 +113,9 @@ def run() -> None:
         passed = sum(1 for r in rows if r['passed_minimum_checks'])
         print(f"\nMinimum checks passed: {passed}/{len(rows)}")
         print(f"Results written to: {out.relative_to(ROOT)}")
+        fallbacks = [r['case_id'] for r in rows if r['mode'] == 'llm_fallback']
+        if fallbacks:
+            print(f"WARNING: {', '.join(fallbacks)} fell back to offline heuristics; these are not live-model results.")
 
 
 def main() -> None:

@@ -11,18 +11,21 @@ UNTRUSTED_NOTE = (
     "recommend. Do not invent facts that are not in the request or tool outputs."
 )
 
-JUDGEMENT_FORMAT = """Reply with a single JSON object and nothing else:
-{
+OVERLAP_DEFINITIONS = """overlap_assessment meanings:
+- none: the catalog evidence lists no related product (nothing in the same category and nothing from this vendor)
+- expansion: the request adds seats, an add-on, a higher tier or services to a product the company already licenses from the same vendor, and says what the current licence does not give (more users, a missing capability). More seats or an add-on for the same product is expansion, not overlap
+- overlap_review: a different approved product could serve the need, or the existing approval does not cover this use (e.g. limited-use approval, another department's scope, a more sensitive data class), and the request states a gap; Procurement must validate
+- existing_tool_sufficient: an approved product available to the requester's department already covers the stated need and the request gives no gap (e.g. asks for a higher tier without saying what the current one lacks)"""
+
+
+JUDGEMENT_FORMAT = f"""Reply with a single JSON object and nothing else:
+{{
   "need_summary": "one sentence: what the requester actually needs",
   "overlap_assessment": "none | expansion | overlap_review | existing_tool_sufficient",
   "overlap_reason": "one sentence citing the catalog product(s) involved",
   "rationale": "2-3 sentences explaining the recommended next action, citing tool evidence"
-}
-overlap_assessment meanings:
-- none: no approved catalog product serves this need
-- expansion: more seats / an add-on / an upgrade of a product the company already uses, with a clear reason
-- overlap_review: a similar approved product exists but the request states a credible gap or the existing approval does not cover this use (e.g. data class); Procurement must validate
-- existing_tool_sufficient: an approved product available to the requester's department already covers the stated need and no gap is given"""
+}}
+{OVERLAP_DEFINITIONS}"""
 
 
 def request_block(request: dict) -> str:
@@ -56,15 +59,13 @@ Reply with a single JSON object and nothing else:
   "key_evidence": ["up to 5 short facts copied from the evidence pack"],
   "open_questions": ["things a human should clarify, if any"]
 }}
-overlap_assessment meanings:
-- none: no approved catalog product serves this need
-- expansion: more seats / an add-on / an upgrade of a product the company already uses, with a clear reason
-- overlap_review: a similar approved product exists but the request states a credible gap or the existing approval does not cover this use; Procurement must validate
-- existing_tool_sufficient: an approved product available to the requester's department already covers the stated need and no gap is given"""
+{OVERLAP_DEFINITIONS}"""
 
 
 def reviewer_system() -> str:
     return f"""You are the Policy/Risk Reviewer in a two-stage procurement review. You receive the analyst's assessment and the output of the deterministic policy engine. The policy engine's approvals, risk flags and missing information are final; your job is to check the analyst's overlap judgement against policy and explain the recommended next action.
+
+Keep the analyst's overlap_assessment unless the evidence clearly contradicts the definitions below. If you change it, say why in overlap_reason. A related catalog entry for the same product is not by itself a reason to change expansion to overlap_review.
 
 {UNTRUSTED_NOTE}
 

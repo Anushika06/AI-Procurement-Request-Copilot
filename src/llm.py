@@ -27,6 +27,8 @@ TRANSIENT_COOLDOWN_SECONDS = 30.0
 # Providers that recently failed with a quota/availability error are skipped
 # until this monotonic time, so an exhausted quota is not hit on every call.
 _cooldown_until: dict[str, float] = {}
+_last_call_at: dict[str, float] = {}
+DAILY_QUOTA_COOLDOWN_SECONDS = 3600.0
 
 
 class LLMError(RuntimeError):
@@ -98,14 +100,47 @@ def provider_chain() -> str:
 
 def reset_provider_state() -> None:
     _cooldown_until.clear()
+    _last_call_at.clear()
+
+
+def _error_text(exc) -> str:
+    try:
+        return exc.response.text or str(exc)
+    except Exception:
+        return str(exc)
 
 
 def _retry_after(exc) -> float | None:
+    """Seconds the provider asks us to wait: Groq sends a Retry-After header,
+    Gemini puts RetryInfo.retryDelay ("43s") or "retry in 43.2s" in the body."""
     try:
         value = exc.response.headers.get("retry-after")
-        return float(value) if value is not None else None
+        if value is not None:
+            return float(value)
     except (AttributeError, TypeError, ValueError):
-        return None
+        pass
+    text = _error_text(exc)
+    for pattern in (r'"retryDelay"\s*:\s*"([\d.]+)s"', r"retry in ([\d.]+)\s*s"):
+        match = re.search(pattern, text, re.I)
+        if match:
+            return float(match.group(1))
+    return None
+
+
+def _is_daily_quota(exc) -> bool:
+    text = _error_text(exc).lower()
+    return "perday" in text or "per day" in text or "requests per day" in text
+
+
+def _throttle(provider_name: str) -> None:
+    """Optional client-side spacing between calls (LLM_MIN_CALL_INTERVAL seconds),
+    used by evaluation runs to stay under per-minute request/token limits."""
+    interval = float(os.getenv("LLM_MIN_CALL_INTERVAL") or 0)
+    if interval > 0:
+        wait = _last_call_at.get(provider_name, 0.0) + interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+    _last_call_at[provider_name] = time.monotonic()
 
 
 def _messages_for(provider: Provider, messages: list[dict]) -> list[dict]:
@@ -194,8 +229,9 @@ class LLMClient:
         }
         if tools:
             if provider.name == "groq":
-                # Groq Llama 3 natively emits a 'json' tool call when asked for JSON while tools are active.
-                # We add a dummy 'json' tool so the API validation passes, then unwrap it below.
+                # gpt-oss models on Groq sometimes answer with a call to an undeclared "json" tool,
+                # which Groq rejects with HTTP 400 (tool_use_failed). Declaring it lets the reply
+                # through; it is converted back into plain content below and never executed.
                 kwargs["tools"] = list(tools) + [{
                     "type": "function",
                     "function": {"name": "json", "description": "Return the final JSON output."}
@@ -208,17 +244,20 @@ class LLMClient:
         transient_attempt = rate_waits = 0
         while True:
             try:
+                _throttle(provider.name)
                 response = self._client(provider).chat.completions.create(**kwargs)
                 break
             except APIStatusError as exc:
                 status = exc.status_code
                 if status == 429:
-                    wait = _retry_after(exc)
+                    daily = _is_daily_quota(exc)
+                    wait = None if daily else _retry_after(exc)
                     if wait is not None and wait <= self.max_rate_wait and rate_waits < 3:
                         rate_waits += 1
                         time.sleep(wait)
                         continue
-                    raise LLMError(f"{type(exc).__name__}: {exc}", 429, wait, can_fall_back=True) from exc
+                    cooldown = DAILY_QUOTA_COOLDOWN_SECONDS if daily else wait
+                    raise LLMError(f"{type(exc).__name__}: {exc}", 429, cooldown, can_fall_back=True) from exc
                 if status in TRANSIENT_STATUS:
                     if transient_attempt < len(RETRY_DELAYS_SECONDS):
                         time.sleep(RETRY_DELAYS_SECONDS[transient_attempt])
@@ -239,16 +278,12 @@ class LLMClient:
             raise LLMError("Empty response from model")
         message = response.choices[0].message
 
-        # Groq Llama 3 models emit a tool call named 'json' when asked for JSON
-        # output while tools are active.  We registered the dummy 'json' tool
-        # above so Groq's server validation accepts it.  Here we normalise the
-        # response back to a plain content reply so the agent loop works
-        # identically regardless of provider.
+        # Normalise the declared "json" pseudo-tool back into a plain reply so the
+        # agent loop behaves the same on every provider.
         if provider.name == "groq" and message.tool_calls:
             real = [c for c in message.tool_calls if c.function.name != "json"]
             json_calls = [c for c in message.tool_calls if c.function.name == "json"]
             if json_calls and not real:
-                # Pure 'json' call: unwrap into content.
                 from openai.types.chat import ChatCompletionMessage
                 message = ChatCompletionMessage(
                     role="assistant",
@@ -256,8 +291,6 @@ class LLMClient:
                     tool_calls=None,
                 )
             elif json_calls and real:
-                # Mixed: strip the 'json' call, pass real tool calls through.
-                # The agent loop will never see the dummy call; no round-trip error.
                 from openai.types.chat import ChatCompletionMessage
                 message = ChatCompletionMessage(
                     role="assistant",
