@@ -18,7 +18,7 @@ FDE Assessment 3. All data is synthetic and comes from the starter pack.
 
 | Architecture A - Single agent | Architecture B - Staged (Analyst + Reviewer) |
 |:---:|:---:|
-| ![Architecture A analysis result](screenshots\offline\archA\image.png) | ![Architecture B analysis result](screenshots\offline\archB\image.png) |
+| ![Architecture A analysis result](screenshots/offline/archA/image.png) | ![Architecture B analysis result](screenshots/offline/archB/image.png) |
 | One agent, tool-calling loop, code guardrails | Fixed tool plan, two LLM calls, JSON handoff |
 
 ---
@@ -27,7 +27,7 @@ FDE Assessment 3. All data is synthetic and comes from the starter pack.
 
 | Offline mode (deterministic fallback) | Online mode (live LLM) |
 |:---:|:---:|
-| ![Offline analysis result](screenshots\offline\archA\image.png) | ![Online analysis result](screenshots\online\image.png) |
+| ![Offline analysis result](screenshots/offline/archA/image.png) | ![Online analysis result](screenshots/online/image.png) |
 | Sidebar shows "offline mode"; overlap is keyword-based | Sidebar shows provider:model; overlap is LLM-judged |
 
 ---
@@ -36,7 +36,7 @@ FDE Assessment 3. All data is synthetic and comes from the starter pack.
 
 | Offline | Online |
 |:---:|:---:|
-| ![New Request form offline](screenshots\offline\archB\image(3).png) | ![New Request form online](screenshots\online\image(3).png) |
+| ![New Request form offline](screenshots/offline/archB/image(3).png) | ![New Request form online](screenshots/online/image(3).png) |
 | Same form and pipeline; overlap decided by heuristic | Same form and pipeline; overlap decided by LLM |
 
 ---
@@ -45,7 +45,7 @@ FDE Assessment 3. All data is synthetic and comes from the starter pack.
 
 | Offline evidence + trace | Online evidence + trace |
 |:---:|:---:|
-| ![Offline evidence table](screenshots\offline\archB\image(5).png) | ![Online evidence table](screenshots\online\image(5).png) |
+| ![Offline evidence table](screenshots/offline/archB/image(5).png) | ![Online evidence table](screenshots/online/image(5).png) |
 | Mode = `offline`; LLM calls = 0 | Mode = `llm`; provider:model shown in trace |
 
 ---
@@ -54,7 +54,7 @@ FDE Assessment 3. All data is synthetic and comes from the starter pack.
 
 | Human Review form | Review Log |
 |:---:|:---:|
-| ![Human Review form](screenshots\offline\archA\image(1).png) | ![Review Log tab](screenshots\offline\archA\image(2).png) |
+| ![Human Review form](screenshots/offline/archA/image(1).png) | ![Review Log tab](screenshots/offline/archA/image(2).png) |
 | Reviewer records their own decision; copilot cannot approve | All decisions recorded in the session |
 
 ---
